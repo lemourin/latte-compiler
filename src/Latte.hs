@@ -9,8 +9,8 @@ main = do
   interact latte
 
 latte s = 
-  let 
-    Ok a = pProgram (myLexer s) 
+  let
+    Ok a = pProgram (myLexer s)
   in 
     case compile a state_empty of
       State { 

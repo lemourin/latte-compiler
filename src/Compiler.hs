@@ -98,6 +98,7 @@ module Compiler where
         compose a (match_expression_type t exp1) (match_expression_type t exp2)
       EOr a exp1 exp2 ->
         compose a (match_expression_type t exp1) (match_expression_type t exp2)
+      _ -> Nothing
       where
         error a = (((show a) ++ ": expression doesn't match type " ++ (show t) ++ "\n") ++)
         compose a e1 e2 = case (e1, e2) of
@@ -196,6 +197,14 @@ module Compiler where
           Minus _ ->
             "  sub rax, rcx\n\
             \  push rax\n"
+      Not _ expr -> nstate {
+        output = output . string 
+          "  pop rax\n\
+          \  not rax\n\
+          \  and rax, 1\n\
+          \  push rax\n"
+      } where
+        nstate@State { output = output } = generate_expression expr state
       where
         merge_expressions exp1 exp2 operation state = 
           rstate { output = output . string merge } where
@@ -235,13 +244,25 @@ module Compiler where
       } = generate_expression exp state
 
   generate_statement :: Show a => Stmt a -> StateData -> StateData
-  generate_statement stmt state = 
+  generate_statement stmt state@State { output = output } = 
     case stmt of
       Empty _ -> state
       BStmt _ block -> generate_block block state
       SExp _ exp -> generate_expression exp state
       Cond a exp stmt -> generate_condition exp stmt (Empty a) state
       CondElse _ exp stmt1 stmt2 -> generate_condition exp stmt1 stmt2 state
+      VRet _ -> state {
+        output = output . string
+          "  leave\n\
+          \  ret\n"
+      }
+      Ret _ expr -> nstate { 
+        output = output . string 
+          "  pop rax\n\
+          \  leave\n\
+          \  ret\n"
+      } where
+        nstate@State { output = output } = generate_expression expr state
       Incr _ ident -> state {
         output = output . (load_variable idx "rax") . (string "  inc rax\n") . (set_variable idx "rax")
       } where
