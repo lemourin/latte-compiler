@@ -14,7 +14,7 @@ all: latte
 lib/runtime.o: lib/runtime.c
 	gcc -c $^ -o $@
 
-latte: $(LATTE_SOURCES)
+latte: $(LATTE_SOURCES) lib/runtime.o
 	ghc --make $^ -o latte
 
 grammar/LexLatte.hs: grammar/ParLatte.hs

@@ -8,10 +8,17 @@ module Compiler where
   
   data Value = 
     ValueInteger Integer
+
+  data ValueType =
+    StringValue | 
+    IntegerValue | 
+    BooleanValue |
+    VoidValue |
+    FunctionValue ValueType [ValueType]
   
   type Location = Integer
 
-  type Environment = Map.Map Ident Location
+  type Environment = Map.Map Ident (ValueType, Location)
 
   type StringData = String -> String
   
@@ -58,6 +65,30 @@ module Compiler where
       Just r -> set_variable idx r
       Nothing -> 
         string ("  mov rax, " ++ "[rbp + " ++ (show (8 * (idx - 6 + 2))) ++ "]\n") . set_variable idx "rax"
+
+  to_value_type t =
+    case t of
+      Int _ -> IntegerValue
+      Str _ -> StringValue
+      Bool _ -> BooleanValue
+
+  
+  typeof :: Show a => Expr a -> StateData -> ValueType
+  typeof expr state =
+    case expr of
+      EString _ _ -> StringValue
+      EApp _ ident _ -> t where Just (FunctionValue t _, _) = location ident state
+      ELitInt _ _ -> IntegerValue
+      ELitTrue _ -> BooleanValue
+      ELitFalse _ -> BooleanValue
+      Neg _ _ -> IntegerValue
+      Not _ _ -> BooleanValue
+      EMul _ _ _ _ -> IntegerValue
+      EAdd _ exp _ _ -> typeof exp state
+      ERel _ _ _ _ -> BooleanValue
+      EAnd _ _ _ -> BooleanValue
+      EOr _ _ _ -> BooleanValue
+      EVar _ ident -> t where Just (t, _) = location ident state
 
   required_stack :: Show a => TopDef a -> Int
   required_stack function@(FnDef a _ _ args block) =
@@ -130,6 +161,21 @@ module Compiler where
               Nothing -> (is_ok e, False)
               _ -> (error, False)
 
+  generate_string :: String -> StateData -> StateData
+  generate_string ('"':str) state@State { output = output } = state {
+    output = output . string (
+      "  mov rdi, " ++ (show ((length text) + 1)) ++ "\n\
+      \  call malloc\n"
+    ) . copy_string text . string (
+      "  mov byte [rax + " ++ (show (length str)) ++ "], 0\n\
+      \  push rax\n"
+    )
+  } where
+    text = init str
+    copy_string str =
+      foldl merge (string "") (zip str [0..]) where
+        merge str (letter, idx) =
+          str . string ("  mov byte [rax + " ++ (show idx) ++ "], '" ++ (letter:[]) ++ "'\n")
   
   generate_expression :: Show a => Expr a -> StateData -> StateData
   generate_expression expr state@State { output = output } =
@@ -139,9 +185,10 @@ module Compiler where
           output = output . (load_variable idx "rax") . string "  push rax\n"
         } where
           idx = case location ident state of
-            Just x -> x
+            Just (_, x) -> x
       ELitFalse a -> generate_expression (ELitInt a 0) state
       ELitTrue a -> generate_expression (ELitInt a 1) state
+      EString _ str -> generate_string str state
       EApp _ ident expr -> case ident of 
         Ident id -> nstate {
           output = 
@@ -197,9 +244,15 @@ module Compiler where
             \  push rdx\n"
       EAdd _ e1 op e2 -> merge_expressions e1 e2 operation state where
         operation = case op of
-          Plus _ ->
-            "  add rax, rcx\n\
-            \  push rax\n"
+          Plus _ -> case typeof e1 state of
+            IntegerValue ->
+              "  add rax, rcx\n\
+              \  push rax\n"
+            StringValue ->
+              "  mov rdi, rax\n\
+              \  mov rsi, rcx\n\
+              \  call concatenate\n\
+              \  push rax\n"
           Minus _ ->
             "  sub rax, rcx\n\
             \  push rax\n"
@@ -208,6 +261,14 @@ module Compiler where
           "  pop rax\n\
           \  not rax\n\
           \  and rax, 1\n\
+          \  push rax\n"
+      } where
+        nstate@State { output = output } = generate_expression expr state
+      Neg _ expr -> nstate {
+        output = output . string 
+          "  pop rax\n\
+          \  not rax\n\
+          \  add rax, 1\n\
           \  push rax\n"
       } where
         nstate@State { output = output } = generate_expression expr state
@@ -297,17 +358,17 @@ module Compiler where
         output = output . (load_variable idx "rax") . (string "  inc rax\n") . (set_variable idx "rax")
       } where
         State { output = output } = state
-        Just idx = location ident state
+        Just (_, idx) = location ident state
       Decr _ ident -> state {
         output = output . (load_variable idx "rax") . (string "  dec rax\n") . (set_variable idx "rax")
       } where
         State { output = output } = state
-        Just idx = location ident state
+        Just (_, idx) = location ident state
       Ass _ ident exp -> nstate {
         output = output . (string "  pop rax\n") . (set_variable idx "rax")
       } where 
         nstate@State { output = output } = generate_expression exp state
-        Just idx = location ident nstate
+        Just (_, idx) = location ident nstate
       Decl _ t arr -> 
         foldl merge state arr where
           merge state@State {
@@ -316,12 +377,12 @@ module Compiler where
             local_id = local_id
           } e = case e of
             NoInit _ ident -> state {
-              environment_stack = (Map.insert ident local_id env) : rest,
+              environment_stack = (Map.insert ident ((to_value_type t), local_id) env) : rest,
               output = output . set_variable local_id "0",
               local_id = local_id + 1
             }
             Init _ ident expr -> nstate {
-              environment_stack = (Map.insert ident local_id env) : rest,
+              environment_stack = (Map.insert ident ((to_value_type t), local_id) env) : rest,
               output = output . (string "  pop rax\n") . (set_variable local_id "rax"),
               local_id = local_id + 1
             } where
@@ -329,17 +390,36 @@ module Compiler where
                 output = output, 
                 environment_stack = env : rest
               } = generate_expression expr state
+
+  generate_cleanup :: StateData -> StateData
+  generate_cleanup state@State { environment_stack = env:rest } =
+    foldl merge state env where
+      merge state@State {
+        output = output
+      } (t, l) = case t of
+        StringValue -> state {
+          output = output . load_variable l "rdi" . string (
+            "  call free\n"
+          )
+        }
+        _ -> state
   
   generate_block :: Show a => Block a -> StateData -> StateData
-  generate_block (Block _ stmts) state = 
-    foldl merge state stmts where
-      merge state e = generate_statement e state
+  generate_block (Block _ stmts) state@State { environment_stack = environment_stack } = 
+    nstate {
+      environment_stack = environment_stack
+    } where
+      nstate = foldl merge state {
+        environment_stack = Map.empty:environment_stack
+      } stmts where
+        merge state e = generate_statement e state
 
   generate_function :: Show a => TopDef a -> StateData -> StateData 
   generate_function 
     function@(FnDef _ t (Ident name) args block) 
     state@State { output = output, environment_stack = environment_stack } = 
       nstate {
+        environment_stack = environment_stack,
         output = noutput . epilogue
       } where
         nstate@State { output = noutput } = generate_block block state {
@@ -348,7 +428,7 @@ module Compiler where
           local_id = toInteger (length args)
         }
         argument_map = foldl insert Map.empty (zip args [0..]) where
-          insert map ((Arg _ _ ident), idx) = Map.insert ident idx map
+          insert map ((Arg _ t ident), idx) = Map.insert ident (to_value_type t, idx) map
         prologue = 
           string (name ++ ":\n  enter " ++ show (required_stack function) ++ ", 0\n") .
           (foldl (.) (string "") list) where
@@ -359,37 +439,45 @@ module Compiler where
             
 
   compile_function :: Show a => TopDef a -> StateData -> StateData 
-  compile_function func state@State { output = output } =
-    case func of
-      FnDef _ t ident _ block -> 
-        case match_return_type t block of
-          Nothing -> generate_function func state
-          Just str -> state { error_output = str }
+  compile_function func@(FnDef _ t ident _ block) state@State { output = output } =
+    case match_return_type t block of
+      Nothing -> generate_function func state
+      Just str -> state { error_output = str }
 
   compile :: Show a => Program a -> StateData -> StateData
-  compile code state@State { output = output } = 
-    case code of
-      Program _ [] -> state { 
-        output = (
-          "section .text\n\n\
-          \global _start\n\n\
-          \extern printInt\n\
-          \extern printString\n\
-          \extern error\n\
-          \extern readInt\n\
-          \extern readString\n\n\
-          \_start:\n\
-          \  call main\n\
-          \  mov rdi, rax\n\
-          \  mov rax, 60\n\
-          \  syscall\n\n"
-        ++) . output
-      }
-      Program d (head:lst) -> 
-        let
-          fst = compile_function head state
-          rest = compile (Program d lst) fst
-        in
-          rest
+  compile (Program d code) state =
+    result initial_state where
+      result state = foldl merge state code where
+        merge state func = compile_function func state
+      initial_state = 
+        foldl merge state { 
+          environment_stack = [Map.fromList [
+            (Ident "printInt", (FunctionValue VoidValue [IntegerValue], 0)),
+            (Ident "printString", (FunctionValue VoidValue [StringValue], 0)),
+            (Ident "error", (FunctionValue VoidValue [], 0)),
+            (Ident "readInt", (FunctionValue IntegerValue [], 0)),
+            (Ident "readString", (FunctionValue StringValue [], 0))
+          ]],
+          output = string (
+            "section .text\n\n\
+            \global _start\n\n\
+            \extern malloc\n\
+            \extern free\n\
+            \extern concatenate\n\
+            \extern printInt\n\
+            \extern printString\n\
+            \extern error\n\
+            \extern readInt\n\
+            \extern readString\n\n\
+            \_start:\n\
+            \  call main\n\
+            \  mov rdi, rax\n\
+            \  mov rax, 60\n\
+            \  syscall\n\n"
+          )
+        } code where
+          merge state@State{ environment_stack = [env] } (FnDef _ t ident args _) = 
+            state { environment_stack = [Map.insert ident (func_type, 0) env] } where
+              func_type = FunctionValue (to_value_type t) (map (\(Arg _ t _) -> to_value_type t) args)
   
   
