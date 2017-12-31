@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define MAX_LENGTH 100
+
 void printInt(int n) {
   printf("%d\n", n);
 }
@@ -22,7 +24,9 @@ int readInt() {
 }
 
 const char* readString() {
-  return NULL;
+  char* result = malloc(MAX_LENGTH);
+  scanf("%s", result);
+  return result;
 }
 
 const char* concatenate(const char* str1, const char* str2) {

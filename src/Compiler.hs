@@ -176,9 +176,31 @@ module Compiler where
       foldl merge (string "") (zip str [0..]) where
         merge str (letter, idx) =
           str . string ("  mov byte [rax + " ++ (show idx) ++ "], '" ++ (letter:[]) ++ "'\n")
-  
+
+  generate_lazy_expression :: Show a => Expr a -> StateData -> StateData
+  generate_lazy_expression expr state@State { label_id = label_id } =
+    case expr of
+      EOr _ e1 e2 -> result e1 e2 "cmp dword [rsp], 1"
+      EAnd _ e1 e2 -> result e1 e2 "cmp dword [rsp], 0"
+    where 
+      result e1 e2 condition = rstate {
+          output = routput . string (
+            "L" ++ (show label_id) ++ ":\n"
+          )
+      } where
+          rstate@State { output = routput } = generate_expression e2 nstate {
+            output = noutput . string (
+              "  " ++ condition ++ "\n\
+              \  je L" ++ show label_id ++ "\n\
+              \  add rsp, 8\n"
+            )
+          }
+          nstate@State { output = noutput } = generate_expression e1 state {
+            label_id = label_id + 1
+          }
+
   generate_expression :: Show a => Expr a -> StateData -> StateData
-  generate_expression expr state@State { output = output } =
+  generate_expression expr state@State { output = output, label_id = label_id } =
     case expr of
       EVar _ ident -> 
         state {
@@ -203,14 +225,8 @@ module Compiler where
       ELitInt _ int -> state {
         output = output . string ("  push " ++ (show int) ++ "\n")
       }
-      EAnd _ e1 e2 -> merge_expressions e1 e2 operation state where
-        operation =
-          "  and rax, rcx\n\
-          \  push rax\n"
-      EOr _ e1 e2 -> merge_expressions e1 e2 operation state where
-        operation =
-          "  or rax, rcx\n\
-          \  push rax\n"
+      EAnd _ _ _ -> generate_lazy_expression expr state
+      EOr _ _ _ -> generate_lazy_expression expr state
       ERel _ e1 op e2 -> nstate { label_id = label_id + 2 } where
         nstate@State { label_id = label_id } = merge_expressions e1 e2 operation state
         mnemonic op = 
@@ -440,9 +456,10 @@ module Compiler where
 
   compile_function :: Show a => TopDef a -> StateData -> StateData 
   compile_function func@(FnDef _ t ident _ block) state@State { output = output } =
-    case match_return_type t block of
-      Nothing -> generate_function func state
-      Just str -> state { error_output = str }
+    generate_function func state
+    -- case match_return_type t block of
+    --   Nothing -> generate_function func state
+    --   Just str -> state { error_output = str }
 
   compile :: Show a => Program a -> StateData -> StateData
   compile (Program d code) state =
