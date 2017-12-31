@@ -60,16 +60,20 @@ module Compiler where
         string ("  mov rax, " ++ "[rbp + " ++ (show (8 * (idx - 6 + 2))) ++ "]\n") . set_variable idx "rax"
 
   required_stack :: Show a => TopDef a -> Int
-  required_stack function@(FnDef _ _ _ args block) =
-    8 * (length args + compute block) where
-      compute (Block _ stmts) =
-        current + subblock where 
+  required_stack function@(FnDef a _ _ args block) =
+    8 * (length args + compute (BStmt a block)) where
+      compute stmt = case stmt of
+        BStmt _ (Block _ stmts) -> current + subblock where
           (current, subblock) = foldl merge (0, 0) stmts where
             merge (current, subblock) stmt =
               case stmt of
                 Decl _ _ items -> (current + (length items), subblock)
-                BStmt _ block -> (current, max (compute block) subblock)
-                _ -> (current, subblock)
+                _ -> (current, max (compute stmt) subblock)
+        Cond _ _ stmt -> compute stmt
+        CondElse _ _ stmt_true stmt_false -> max (compute stmt_true) (compute stmt_false)
+        While _ _ stmt -> compute stmt
+        Decl _ _ items -> length items
+        _ -> 0
 
   match_expression_type :: Show a => Type a -> Expr a -> Maybe StringData
   match_expression_type t expr =
