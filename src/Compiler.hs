@@ -140,6 +140,8 @@ module Compiler where
         } where
           idx = case location ident state of
             Just x -> x
+      ELitFalse a -> generate_expression (ELitInt a 0) state
+      ELitTrue a -> generate_expression (ELitInt a 1) state
       EApp _ ident expr -> case ident of 
         Ident id -> nstate {
           output = 
