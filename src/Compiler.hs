@@ -243,6 +243,29 @@ module Compiler where
         output = output, label_id = label_id 
       } = generate_expression exp state
 
+  generate_while :: Show a => Stmt a -> StateData -> StateData
+  generate_while (While a exp stmt) state@State { 
+    output = output,
+    label_id = label_id
+  } =
+    rstate {
+      output = routput . string (
+        "  jmp L" ++ show label_id ++ "\n\
+        \L" ++ show (label_id + 1) ++ ":\n"
+      )
+    } where
+      rstate@State { output = routput } = generate_statement stmt nstate {
+        output = noutput . string (
+          "  pop rax\n\
+          \  cmp rax, 0\n\
+          \  je L" ++ show (label_id + 1) ++ "\n"
+        )
+      }
+      nstate@State { output = noutput } = generate_expression exp state { 
+        output = output . string ("L" ++ (show label_id) ++ ":\n"),
+        label_id = label_id + 2
+      }
+
   generate_statement :: Show a => Stmt a -> StateData -> StateData
   generate_statement stmt state@State { output = output } = 
     case stmt of
@@ -251,6 +274,7 @@ module Compiler where
       SExp _ exp -> generate_expression exp state
       Cond a exp stmt -> generate_condition exp stmt (Empty a) state
       CondElse _ exp stmt1 stmt2 -> generate_condition exp stmt1 stmt2 state
+      While _ _ _ -> generate_while stmt state
       VRet _ -> state {
         output = output . string
           "  leave\n\
