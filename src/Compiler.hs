@@ -14,7 +14,8 @@ module Compiler where
     IntegerValue | 
     BooleanValue |
     VoidValue |
-    FunctionValue ValueType [ValueType]
+    ErrorValue |
+    FunctionValue ValueType [ValueType] deriving (Eq, Show)
   
   type Location = Integer
 
@@ -27,12 +28,13 @@ module Compiler where
     error_output :: StringData,
     output :: StringData,
     local_id :: Integer,
-    label_id :: Integer
+    label_id :: Integer,
+    current_function :: ValueType
   }
 
   string s = (++) s
   
-  state_empty = State [] ("" ++) ("" ++) 0 0
+  state_empty = State [] ("" ++) ("" ++) 0 0 ErrorValue
 
   argument_register i = 
     if i < 6 then
@@ -71,13 +73,15 @@ module Compiler where
       Int _ -> IntegerValue
       Str _ -> StringValue
       Bool _ -> BooleanValue
-
+      Void _ -> VoidValue
   
   typeof :: Show a => Expr a -> StateData -> ValueType
   typeof expr state =
     case expr of
       EString _ _ -> StringValue
-      EApp _ ident _ -> t where Just (FunctionValue t _, _) = location ident state
+      EApp _ ident _ -> case location ident state of
+        Just (FunctionValue t _, _) -> t
+        Nothing -> ErrorValue
       ELitInt _ _ -> IntegerValue
       ELitTrue _ -> BooleanValue
       ELitFalse _ -> BooleanValue
@@ -88,7 +92,9 @@ module Compiler where
       ERel _ _ _ _ -> BooleanValue
       EAnd _ _ _ -> BooleanValue
       EOr _ _ _ -> BooleanValue
-      EVar _ ident -> t where Just (t, _) = location ident state
+      EVar _ ident -> case location ident state of 
+        Just (t, _) -> t
+        Nothing -> ErrorValue
 
   required_stack :: Show a => TopDef a -> Int
   required_stack function@(FnDef a _ _ args block) =
@@ -105,61 +111,6 @@ module Compiler where
         While _ _ stmt -> compute stmt
         Decl _ _ items -> length items
         _ -> 0
-
-  match_expression_type :: Show a => Type a -> Expr a -> Maybe StringData
-  match_expression_type t expr =
-    case expr of
-      EString a str -> case t of
-        Str _ -> Nothing
-        _ -> Just (error a)
-      ELitInt a i -> case t of
-        Int _ -> Nothing
-        _ -> Just (error a)
-      ELitTrue a -> case t of
-        Bool _ -> Nothing
-        _ -> Just (error a)
-      ELitFalse a -> case t of
-        Bool _ -> Nothing
-        _ -> Just (error a)
-      Neg a exp -> match_expression_type t exp
-      Not a exp -> match_expression_type t exp
-      EMul a exp1 _ exp2 ->
-        compose a (match_expression_type t exp1) (match_expression_type t exp2)
-      EAdd a exp1 _ exp2 ->
-        compose a (match_expression_type t exp1) (match_expression_type t exp2)
-      ERel a exp1 _ exp2 ->
-        compose a (match_expression_type t exp1) (match_expression_type t exp2)
-      EAnd a exp1 exp2 ->
-        compose a (match_expression_type t exp1) (match_expression_type t exp2)
-      EOr a exp1 exp2 ->
-        compose a (match_expression_type t exp1) (match_expression_type t exp2)
-      _ -> Nothing
-      where
-        error a = (((show a) ++ ": expression doesn't match type " ++ (show t) ++ "\n") ++)
-        compose a e1 e2 = case (e1, e2) of
-          (Nothing, Nothing) -> Nothing
-          (Just e1, Just e2) -> Just (e1 . e2)
-          (Just e, _) -> Just e
-          (_, Just e) -> Just e
-
-  match_return_type :: Show a => Type a -> Block a -> Maybe StringData
-  match_return_type t block =
-    case block of
-      Block a stmts ->
-        case foldl merge (Nothing, False) stmts of 
-          (ret, _) -> ret
-        where
-          is_ok e = case e of
-            BStmt a block -> match_return_type t block
-            Ret a expr -> match_expression_type t expr
-            VRet a -> case t of
-              Void a -> Nothing
-              _ -> Just (("expected non void return type at " ++ show a) ++)
-            _ -> Nothing
-          merge (error, return) e = 
-            case error of
-              Nothing -> (is_ok e, False)
-              _ -> (error, False)
 
   generate_string :: String -> StateData -> StateData
   generate_string ('"':str) state@State { output = output } = state {
@@ -199,36 +150,69 @@ module Compiler where
             label_id = label_id + 1
           }
 
+  generate_function_call :: Show a => Expr a -> StateData -> StateData
+  generate_function_call (EApp position ident@(Ident id) expr) state =
+    nstate {
+      output = output . load_registers (length expr) . string (
+        "  call " ++ id ++ "\n\
+        \  add rsp, " ++ (show (8 * (max 0 ((length expr) - 6)))) ++ "\n\
+        \  push rax\n"
+      ),
+      error_output = error_output . error
+    } where
+      nstate@State { 
+        output = output, error_output = error_output 
+      } = foldl merge state (reverse expr)
+      merge state e = generate_expression e state
+      error = case location ident state of
+        Nothing -> string ((show position) ++ ": undefined function call " ++ id ++ "\n")
+        Just ((FunctionValue _ args), _) -> 
+          if (length expr) == (length args) then
+            foldl merge (string "") (zip args expr)
+          else
+            string ((show position) ++ ": invalid argument count for function call " ++ show id ++ "\n")
+          where 
+            merge str (t, expr) = 
+              if ftype /= t then
+                string ((show position) ++ 
+                  ": function argument type mismatch: expected " ++ (show t) ++ 
+                  ", got " ++ (show ftype) ++ "\n")
+              else
+                str
+              where ftype = typeof expr state
+        _ -> string (id ++ " at " ++ (show position) ++ " is not a function\n")
+  
+  generate_variable_load :: Show a => Expr a -> StateData -> StateData
+  generate_variable_load (EVar position ident) state@State { output = output, error_output = error_output } = 
+    case location ident state of
+      Just (_, idx) -> state {
+        output = output . (load_variable idx "rax") . string "  push rax\n"
+      }
+      Nothing -> state {
+        error_output = error_output . string (
+          (show position) ++ ": undeclared variable " ++ (show ident) ++ "\n"
+        )
+      }
+
   generate_expression :: Show a => Expr a -> StateData -> StateData
-  generate_expression expr state@State { output = output, label_id = label_id } =
+  generate_expression expr state@State { 
+    output = output, 
+    error_output = error_output, 
+    label_id = label_id 
+  } =
     case expr of
-      EVar _ ident -> 
-        state {
-          output = output . (load_variable idx "rax") . string "  push rax\n"
-        } where
-          idx = case location ident state of
-            Just (_, x) -> x
+      EVar _ _ -> generate_variable_load expr state
       ELitFalse a -> generate_expression (ELitInt a 0) state
       ELitTrue a -> generate_expression (ELitInt a 1) state
       EString _ str -> generate_string str state
-      EApp _ ident expr -> case ident of 
-        Ident id -> nstate {
-          output = 
-            output . load_registers (length expr) . string (
-              "  call " ++ id ++ "\n\
-              \  add rsp, " ++ (show (8 * (max 0 ((length expr) - 6)))) ++ "\n\
-              \  push rax\n"
-            )
-        } where
-          nstate@State { output = output } = foldl merge state (reverse expr)
-          merge state e = generate_expression e state
+      EApp _ _ _ -> generate_function_call expr state
       ELitInt _ int -> state {
         output = output . string ("  push " ++ (show int) ++ "\n")
       }
       EAnd _ _ _ -> generate_lazy_expression expr state
       EOr _ _ _ -> generate_lazy_expression expr state
-      ERel _ e1 op e2 -> nstate { label_id = label_id + 2 } where
-        nstate@State { label_id = label_id } = merge_expressions e1 e2 operation state
+      ERel p e1 op e2 -> nstate { label_id = label_id + 2 } where
+        nstate@State { label_id = label_id } = merge_expressions p e1 e2 operation state
         mnemonic op = 
           case op of 
             LTH _ -> "jl"
@@ -245,7 +229,7 @@ module Compiler where
           \L" ++ (show label_id) ++ ": \n\
           \  push 1\n\
           \L" ++ (show (label_id + 1)) ++ ":\n"
-      EMul _ e1 op e2 -> merge_expressions e1 e2 operation state where
+      EMul p e1 op e2 -> merge_expressions p e1 e2 operation state where
         operation = case op of
           Times _ -> 
             "  imul rax, rcx \n\
@@ -258,7 +242,7 @@ module Compiler where
             "  mov rdx, 0\n\
             \  idiv rcx\n\
             \  push rdx\n"
-      EAdd _ e1 op e2 -> merge_expressions e1 e2 operation state where
+      EAdd p e1 op e2 -> merge_expressions p e1 e2 operation state where
         operation = case op of
           Plus _ -> case typeof e1 state of
             IntegerValue ->
@@ -269,6 +253,7 @@ module Compiler where
               \  mov rsi, rcx\n\
               \  call concatenate\n\
               \  push rax\n"
+            _ -> ""
           Minus _ ->
             "  sub rax, rcx\n\
             \  push rax\n"
@@ -289,15 +274,27 @@ module Compiler where
       } where
         nstate@State { output = output } = generate_expression expr state
       where
-        merge_expressions exp1 exp2 operation state = 
-          rstate { output = output . string merge } where
-            rstate@State { output = output } = generate_expression exp2 nstate
+        merge_expressions position exp1 exp2 operation state =
+          rstate { 
+            output = output . string merge,
+            error_output = error_output . error
+          } where
+            rstate@State { 
+              output = output,
+              error_output = error_output
+            } = generate_expression exp2 nstate
             nstate = generate_expression exp1 state
             merge = 
               "  pop rcx\n\
               \  pop rax\n"
               ++ operation
-
+            type1 = typeof exp1 state
+            type2 = typeof exp2 state
+            error = 
+              if type1 == type2 || type1 == ErrorValue || type2 == ErrorValue then 
+                string ""
+              else
+                string ((show position) ++ ": type mismatch (" ++ show type1 ++ ", " ++ show type2 ++ ")\n")
 
   generate_condition :: Show a => Expr a -> Stmt a -> Stmt a -> StateData -> StateData
   generate_condition exp stmt_true stmt_false state =
@@ -348,64 +345,121 @@ module Compiler where
         output = output . string ("L" ++ (show label_id) ++ ":\n"),
         label_id = label_id + 2
       }
+  
+  generate_assignment :: Show a => Stmt a -> StateData -> StateData
+  generate_assignment (Ass position ident exp) state = 
+    nstate {
+        output = output . (string "  pop rax\n") . (set_variable idx "rax"),
+        error_output = error_output . error
+      } where 
+        nstate@State { output = output, error_output = error_output } = generate_expression exp state
+        (idx, error) = case location ident nstate of 
+          Just (t, idx) -> 
+            if t == exptype || exptype == ErrorValue then
+              (idx, string "")
+            else
+              (0, string (show position ++ 
+                ": type mismatch: expected " ++ show t ++ ", got " ++ (show exptype) ++ "\n"))
+            where exptype = typeof exp state
+          _ -> (0, string ((show position) ++ ": assignment to undeclared variable " ++ show ident ++ "\n"))
+
+  generate_incrementation :: Show a => Stmt a -> StateData -> StateData
+  generate_incrementation stmt state =
+    case stmt of
+      Incr position ident -> result position ident "inc"
+      Decr position ident -> result position ident "dec"
+    where
+      result position ident operation = state {
+        output = output . (load_variable idx "rax") . 
+          (string ("  " ++ operation ++ " rax\n")) . (set_variable idx "rax"),
+        error_output = error_output . error
+      } where
+        State { output = output, error_output = error_output } = state
+        (idx, error) = case location ident state of
+          Just (t, idx) -> case t of
+            IntegerValue -> (idx, string "")
+            _ -> (idx, string (show position ++ ": variable " ++ show ident ++ " not an IntegerValue\n"))
+          Nothing -> (0, string (show position ++ ": undeclared variable " ++ show ident ++ "\n"))
 
   generate_statement :: Show a => Stmt a -> StateData -> StateData
-  generate_statement stmt state@State { output = output } = 
+  generate_statement stmt state@State { 
+    output = output,
+    error_output = error_output,
+    environment_stack = environment_stack,
+    current_function = FunctionValue return_type _ 
+  } = 
     case stmt of
       Empty _ -> state
-      BStmt _ block -> generate_block block state
+      BStmt _ block -> generate_block block state {
+        environment_stack = Map.empty : environment_stack
+      }
       SExp _ exp -> generate_expression exp state
       Cond a exp stmt -> generate_condition exp stmt (Empty a) state
       CondElse _ exp stmt1 stmt2 -> generate_condition exp stmt1 stmt2 state
       While _ _ _ -> generate_while stmt state
-      VRet _ -> state {
+      VRet position -> state {
         output = output . string
           "  leave\n\
-          \  ret\n"
-      }
-      Ret _ expr -> nstate { 
+          \  ret\n",
+        error_output = error_output . error
+      } where 
+        error = if return_type == VoidValue then
+          string ""
+        else
+          string ((show position) ++ ": return value mismatch: expected " ++ (show return_type) ++ " got VoidValue\n")
+      Ret position expr -> nstate { 
         output = output . string 
           "  pop rax\n\
           \  leave\n\
-          \  ret\n"
+          \  ret\n",
+        error_output = error_output . error
       } where
-        nstate@State { output = output } = generate_expression expr state
-      Incr _ ident -> state {
-        output = output . (load_variable idx "rax") . (string "  inc rax\n") . (set_variable idx "rax")
-      } where
-        State { output = output } = state
-        Just (_, idx) = location ident state
-      Decr _ ident -> state {
-        output = output . (load_variable idx "rax") . (string "  dec rax\n") . (set_variable idx "rax")
-      } where
-        State { output = output } = state
-        Just (_, idx) = location ident state
-      Ass _ ident exp -> nstate {
-        output = output . (string "  pop rax\n") . (set_variable idx "rax")
-      } where 
-        nstate@State { output = output } = generate_expression exp state
-        Just (_, idx) = location ident nstate
+        nstate@State { output = output, error_output = error_output } = generate_expression expr state
+        error = 
+          if exptype /= return_type && exptype /= ErrorValue then
+            string ((show position) ++ ": return value mismatch: expected " ++ 
+              (show return_type) ++ " got " ++ show exptype ++ "\n")
+          else
+            string ""
+          where exptype = typeof expr state
+      Incr _ _ -> generate_incrementation stmt state
+      Decr _ _ -> generate_incrementation stmt state
+      Ass _ _ _ -> generate_assignment stmt state
       Decl _ t arr -> 
         foldl merge state arr where
           merge state@State {
-            output = output, 
+            output = output,
+            error_output = error_output,
             environment_stack = env : rest,
             local_id = local_id
           } e = case e of
-            NoInit _ ident -> state {
+            NoInit position ident -> state {
               environment_stack = (Map.insert ident ((to_value_type t), local_id) env) : rest,
               output = output . set_variable local_id "0",
+              error_output = error_output . (error position ident env),
               local_id = local_id + 1
             }
-            Init _ ident expr -> nstate {
+            Init position ident expr -> nstate {
               environment_stack = (Map.insert ident ((to_value_type t), local_id) env) : rest,
               output = output . (string "  pop rax\n") . (set_variable local_id "rax"),
+              error_output = error_output . (error position ident env) . type_error,
               local_id = local_id + 1
             } where
               nstate@State { 
-                output = output, 
+                output = output,
+                error_output = error_output,
                 environment_stack = env : rest
               } = generate_expression expr state
+              exptype = typeof expr state
+              type_error = if (exptype /= (to_value_type t)) && (exptype /= ErrorValue) then
+                string ((show position) ++ ": type mismatch: expected " ++ 
+                  (show (to_value_type t)) ++ ", got " ++ (show exptype) ++ "\n")
+              else
+                string ""
+            where
+              error position ident env = case Map.lookup ident env of
+                Nothing -> string ""
+                Just _ -> string ((show position) ++ ": variable " ++ (show ident) ++ " redeclared\n")
 
   generate_cleanup :: StateData -> StateData
   generate_cleanup state@State { environment_stack = env:rest } =
@@ -421,30 +475,36 @@ module Compiler where
         _ -> state
   
   generate_block :: Show a => Block a -> StateData -> StateData
-  generate_block (Block _ stmts) state@State { environment_stack = environment_stack } = 
-    nstate {
-      environment_stack = environment_stack
-    } where
-      nstate = foldl merge state {
-        environment_stack = Map.empty:environment_stack
-      } stmts where
-        merge state e = generate_statement e state
+  generate_block (Block _ stmts) state = 
+    foldl merge state stmts where
+      merge state e = generate_statement e state
 
   generate_function :: Show a => TopDef a -> StateData -> StateData 
   generate_function 
     function@(FnDef _ t (Ident name) args block) 
-    state@State { output = output, environment_stack = environment_stack } = 
+    state@State { 
+      output = output, 
+      error_output = error_output, 
+      environment_stack = environment_stack,
+      current_function = current_function
+    } = 
       nstate {
         environment_stack = environment_stack,
-        output = noutput . epilogue
+        output = noutput . epilogue,
+        current_function = current_function
       } where
         nstate@State { output = noutput } = generate_block block state {
           output = output . prologue, 
+          error_output = error_output . error,
           environment_stack = argument_map:environment_stack,
-          local_id = toInteger (length args)
+          local_id = toInteger (length args),
+          current_function = FunctionValue (to_value_type t) (map (\(Arg _ t _) -> to_value_type t) args)
         }
-        argument_map = foldl insert Map.empty (zip args [0..]) where
-          insert map ((Arg _ t ident), idx) = Map.insert ident (to_value_type t, idx) map
+        (argument_map, error) = foldl insert (Map.empty, string "") (zip args [0..]) where
+          insert (map, error) ((Arg position t ident), idx) =
+            case Map.lookup ident map of
+              Nothing -> (Map.insert ident (to_value_type t, idx) map, error)
+              _ -> (map, error . string ((show position) ++ ": argument " ++ (show ident) ++ " redeclared\n"))
         prologue = 
           string (name ++ ":\n  enter " ++ show (required_stack function) ++ ", 0\n") .
           (foldl (.) (string "") list) where
@@ -457,9 +517,6 @@ module Compiler where
   compile_function :: Show a => TopDef a -> StateData -> StateData 
   compile_function func@(FnDef _ t ident _ block) state@State { output = output } =
     generate_function func state
-    -- case match_return_type t block of
-    --   Nothing -> generate_function func state
-    --   Just str -> state { error_output = str }
 
   compile :: Show a => Program a -> StateData -> StateData
   compile (Program d code) state =

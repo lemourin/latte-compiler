@@ -1,3 +1,5 @@
+SHELL = /bin/bash
+
 BNFC_SOURCES = \
 	grammar/ParLatte.hs \
 	grammar/AbsLatte.hs \
@@ -30,7 +32,11 @@ grammar/ParLatte.hs: grammar/ParLatte.y
 	happy -gca $<
 
 %.S: %.lat latte
-	./latte < $< > $@
+	./latte < $< > $@; \
+	if [ $$? -ne 0 ]; then \
+		rm $@; \
+		exit 1; \
+	fi;
 
 %.o: %.S
 	nasm -f elf64 -o $@ $<
