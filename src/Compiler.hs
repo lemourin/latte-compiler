@@ -74,6 +74,17 @@ module Compiler where
       Str _ -> StringValue
       Bool _ -> BooleanValue
       Void _ -> VoidValue
+
+  contains_return :: Show a => TopDef a -> Bool
+  contains_return func@(FnDef _ _ _ _ (Block _ stmts)) =
+    foldl merge False stmts where
+      merge found stmt = found || has_return stmt
+      has_return stmt = case stmt of
+        BStmt _ (Block _ stmts) -> foldl merge False stmts
+        CondElse _ _ stmt1 stmt2 -> (has_return stmt1) && (has_return stmt2)
+        VRet _ -> True
+        Ret _ _ -> True
+        _ -> False
   
   typeof :: Show a => Expr a -> StateData -> ValueType
   typeof expr state =
@@ -481,7 +492,7 @@ module Compiler where
 
   generate_function :: Show a => TopDef a -> StateData -> StateData 
   generate_function 
-    function@(FnDef _ t (Ident name) args block) 
+    function@(FnDef position t (Ident name) args block) 
     state@State { 
       output = output, 
       error_output = error_output, 
@@ -491,9 +502,10 @@ module Compiler where
       nstate {
         environment_stack = environment_stack,
         output = noutput . epilogue,
+        error_output = nerror_output . function_error,
         current_function = current_function
       } where
-        nstate@State { output = noutput } = generate_block block state {
+        nstate@State { output = noutput, error_output = nerror_output } = generate_block block state {
           output = output . prologue, 
           error_output = error_output . error,
           environment_stack = argument_map:environment_stack,
@@ -512,7 +524,11 @@ module Compiler where
         epilogue = string
           "  leave\n\
           \  ret\n\n"
-            
+        function_error = if ((to_value_type t) /= VoidValue) && not (contains_return function) then
+          string (show position ++ 
+            ": function " ++ show name ++ ": control reaches end of non-void function\n")
+        else
+          string ""
 
   compile_function :: Show a => TopDef a -> StateData -> StateData 
   compile_function func@(FnDef _ t ident _ block) state@State { output = output } =
