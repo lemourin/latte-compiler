@@ -550,8 +550,16 @@ module Compiler where
             \  syscall\n\n"
           )
         } code where
-          merge state@State{ environment_stack = [env] } (FnDef _ t ident args _) = 
-            state { environment_stack = [Map.insert ident (func_type, 0) env] } where
+          merge state@State{ 
+            environment_stack = [env], error_output = error_output 
+          } (FnDef position t ident args _) = 
+            state { 
+              environment_stack = [Map.insert ident (func_type, 0) env],
+              error_output = error_output . error 
+            } where
               func_type = FunctionValue (to_value_type t) (map (\(Arg _ t _) -> to_value_type t) args)
+              error = case Map.lookup ident env of
+                Nothing -> string ""
+                Just _ -> string ((show position) ++ ": function " ++ show ident ++ " redeclared\n")
   
   
