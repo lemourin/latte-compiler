@@ -129,7 +129,7 @@ module Compiler where
       "  mov rdi, " ++ (show (length text)) ++ "\n\
       \  call malloc\n"
     ) . copy_string text . string (
-      "  mov byte [rax + " ++ (show (length str)) ++ "], 0\n\
+      "  mov byte [rax + " ++ (show ((length str) - 1)) ++ "], 0\n\
       \  push rax\n"
     )
   } where

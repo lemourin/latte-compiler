@@ -1,5 +1,7 @@
 SHELL = /bin/bash
 
+.SUFFIXES:
+
 BNFC_SOURCES = \
 	grammar/ParLatte.hs \
 	grammar/AbsLatte.hs \
@@ -11,13 +13,13 @@ LATTE_SOURCES = \
 	src/Latte.hs \
 	src/Compiler.hs
 
-all: latte
+all: latc_x86_64_run
 
 lib/runtime.o: lib/runtime.c
 	gcc -c $^ -o $@
 
-latte: $(LATTE_SOURCES) lib/runtime.o
-	ghc --make $^ -o latte
+latc_x86_64_run: $(LATTE_SOURCES) lib/runtime.o
+	ghc --make $^ -o $@
 
 grammar/LexLatte.hs: grammar/ParLatte.hs
 	alex -g grammar/LexLatte.x
@@ -31,17 +33,17 @@ grammar/ErrM.hs grammar/TestLatte.hs grammar/ParLatte.y grammar/LexLatte.x: gram
 grammar/ParLatte.hs: grammar/ParLatte.y
 	happy -gca $<
 
-%.S: %.lat latte
-	./latte < $< > $@; \
+%.s: %.lat latc_x86_64_run
+	./latc_x86_64_run < $< > $@; \
 	if [ $$? -ne 0 ]; then \
 		rm $@; \
 		exit 1; \
 	fi;
 
-%.o: %.S
+%.o: %.s
 	nasm -f elf64 -o $@ $<
 
-%.exe: %.o lib/runtime.o
+%: %.o lib/runtime.o
 	ld -o $@ $^ -dynamic-linker \
 		/lib64/ld-linux-x86-64.so.2 \
 		/usr/lib/x86_64-linux-gnu/crt1.o \
@@ -59,7 +61,8 @@ clean:
 		src/*.o \
 		src/*.hi \
 		lib/*.o \
-		grammar/DocLatte.ps
+		grammar/DocLatte.ps \
+		latc_x86_64_run
 
 distclean: clean
 	rm -f \

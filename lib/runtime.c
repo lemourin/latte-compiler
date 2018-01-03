@@ -4,13 +4,9 @@
 
 #define MAX_LENGTH 100
 
-void printInt(int n) {
-  printf("%d\n", n);
-}
+void printInt(int n) { printf("%d\n", n); }
 
-void printString(const char* str) {
-  printf("%s\n", str);
-}
+void printString(const char* str) { printf("%s\n", str ? str : ""); }
 
 void error() {
   printf("runtime error\n");
@@ -30,6 +26,12 @@ const char* readString() {
 }
 
 const char* concatenate(const char* str1, const char* str2) {
+  if (!str1 && !str2)
+    return NULL;
+  else if (!str1)
+    return str2;
+  else if (!str2)
+    return str1;
   char* result = malloc(strlen(str1) + strlen(str2) + 1);
   *result = 0;
   strcat(result, str1);
