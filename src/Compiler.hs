@@ -324,7 +324,10 @@ module Compiler where
       }
 
   generate_expression :: Show a => Expr a -> StateData -> StateData
-  generate_expression expr state@State { 
+  generate_expression expr state = generate_expression_aux (simplify_expression expr) state
+
+  generate_expression_aux :: Show a => Expr a -> StateData -> StateData
+  generate_expression_aux expr state@State {
     output = output, 
     error_output = error_output, 
     label_id = label_id 
