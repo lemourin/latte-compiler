@@ -75,13 +75,100 @@ module Compiler where
       Bool _ -> BooleanValue
       Void _ -> VoidValue
 
+  relational_function operator = 
+    case operator of
+      LTH _ -> (<)
+      LE _ -> (<=)
+      GTH _ -> (>)
+      GE _ -> (>=)
+      EQU _ -> (==)
+      NE _ -> (/=)
+  
+  multiplicative_function operator =
+    case operator of
+      Times _ -> (*)
+      Div _ -> (div)
+      Mod _ -> (mod)
+
+  additive_function operator =
+    case operator of
+      Plus _ -> (+)
+      Minus _ -> (-)
+
+  expression_to_integer expr =
+    case expr of
+      ELitTrue _ -> Just 1
+      ELitFalse _ -> Just 0
+      ELitInt _ value -> Just value
+      _ -> Nothing
+  
+  expression_to_boolean expr =
+    case expr of
+      ELitTrue _ -> Just True
+      ELitFalse _ -> Just False
+      _ -> Nothing
+  
+  boolean_to_expression position b =
+    if b then
+      ELitTrue position
+    else
+      ELitFalse position
+
+  simplify_expression :: Show a => Expr a -> Expr a
+  simplify_expression expr = 
+    case expr of 
+      ERel p expr1 op expr2 -> 
+        case (simplify_expression expr1, simplify_expression expr2) of
+          (e1, e2) -> case (expression_to_integer e1, expression_to_integer e2) of
+            (Just a, Just b) -> boolean_to_expression p (relational_function op a b)
+            _ -> ERel p e1 op e2
+      EMul p expr1 op expr2 ->
+        case (simplify_expression expr1, simplify_expression expr2) of
+          (e1, e2) -> case (expression_to_integer e1, expression_to_integer e2) of
+            (Just a, Just b) -> ELitInt p (multiplicative_function op a b)
+            _ -> EMul p e1 op e2
+      EAdd p expr1 op expr2 ->
+        case (simplify_expression expr1, simplify_expression expr2) of
+          (e1, e2) -> case (expression_to_integer e1, expression_to_integer e2) of
+            (Just a, Just b) -> ELitInt p (additive_function op a b)
+            _ -> EAdd p e1 op e2
+      EAnd p expr1 expr2 ->
+        case (simplify_expression expr1, simplify_expression expr2) of
+          (e1, e2) -> case (expression_to_boolean e1, expression_to_boolean e2) of
+            (Just a, Just b) -> boolean_to_expression p (a && b)
+            _ -> EAnd p e1 e2
+      EOr p expr1 expr2 ->
+        case (simplify_expression expr1, simplify_expression expr2) of
+          (e1, e2) -> case (expression_to_boolean e1, expression_to_boolean e2) of
+            (Just a, Just b) -> boolean_to_expression p (a || b)
+            _ -> EOr p e1 e2
+      Not p expr ->
+        case simplify_expression expr of
+          e -> case expression_to_boolean e of
+            Just a -> boolean_to_expression p (not a)
+            _ -> Not p e
+      Neg p expr ->
+        case simplify_expression expr of
+          e -> case expression_to_integer e of
+            Just a -> ELitInt p (-a)
+            _ -> Neg p e
+      _ -> expr
+
   contains_return :: Show a => TopDef a -> Bool
   contains_return func@(FnDef _ _ _ _ (Block _ stmts)) =
     foldl merge False stmts where
       merge found stmt = found || has_return stmt
       has_return stmt = case stmt of
         BStmt _ (Block _ stmts) -> foldl merge False stmts
-        CondElse _ _ stmt1 stmt2 -> (has_return stmt1) && (has_return stmt2)
+        Cond _ expr stmt -> 
+          case simplify_expression expr of
+            ELitTrue _ -> has_return stmt
+            _ -> False
+        CondElse _ expr stmt1 stmt2 -> 
+          case simplify_expression expr of
+            ELitTrue _ -> has_return stmt1
+            ELitFalse _ -> has_return stmt2
+            _ -> (has_return stmt1) && (has_return stmt2)
         VRet _ -> True
         Ret _ _ -> True
         _ -> False
