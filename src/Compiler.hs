@@ -126,7 +126,7 @@ module Compiler where
   generate_string :: String -> StateData -> StateData
   generate_string ('"':str) state@State { output = output } = state {
     output = output . string (
-      "  mov rdi, " ++ (show ((length text) + 1)) ++ "\n\
+      "  mov rdi, " ++ (show (length text)) ++ "\n\
       \  call malloc\n"
     ) . copy_string text . string (
       "  mov byte [rax + " ++ (show (length str)) ++ "], 0\n\
@@ -550,7 +550,7 @@ module Compiler where
           ]],
           output = string (
             "section .text\n\n\
-            \global _start\n\n\
+            \global main\n\n\
             \extern malloc\n\
             \extern free\n\
             \extern concatenate\n\
@@ -558,12 +558,7 @@ module Compiler where
             \extern printString\n\
             \extern error\n\
             \extern readInt\n\
-            \extern readString\n\n\
-            \_start:\n\
-            \  call main\n\
-            \  mov rdi, rax\n\
-            \  mov rax, 60\n\
-            \  syscall\n\n"
+            \extern readString\n\n"
           )
         } code where
           merge state@State{ 
