@@ -85,6 +85,23 @@ module Compiler where
         VRet _ -> True
         Ret _ _ -> True
         _ -> False
+
+  expression_position :: Show a => Expr a -> a
+  expression_position expr =
+    case expr of
+      EString p _ -> p
+      EApp p _ _ -> p
+      ELitInt p _ -> p
+      ELitTrue p -> p
+      ELitFalse p -> p
+      Neg p _ -> p
+      Not p _ -> p
+      EMul p _ _ _ -> p
+      EAdd p _ _ _ -> p
+      ERel p _ _ _ -> p
+      EAnd p _ _ -> p
+      EOr p _ _ -> p
+      EVar p _ -> p
   
   typeof :: Show a => Expr a -> StateData -> ValueType
   typeof expr state =
@@ -106,6 +123,15 @@ module Compiler where
       EVar _ ident -> case location ident state of 
         Just (t, _) -> t
         Nothing -> ErrorValue
+  
+  match_type :: Show a => Expr a -> [ValueType] -> StateData -> StringData
+  match_type exp t state = 
+    if exptype /= ErrorValue && (notElem exptype t) then
+      string ((show (expression_position exp)) ++ ": expected one of " ++ show t ++ 
+        ", got " ++ show exptype ++ "\n")
+    else
+      string ""
+    where exptype = typeof exp state
 
   required_stack :: Show a => TopDef a -> Int
   required_stack function@(FnDef a _ _ args block) =
@@ -148,9 +174,14 @@ module Compiler where
       result e1 e2 condition = rstate {
           output = routput . string (
             "L" ++ (show label_id) ++ ":\n"
-          )
+          ),
+          error_output = error_output . match_type e1 [BooleanValue] state . 
+            match_type e2 [BooleanValue] state
       } where
-          rstate@State { output = routput } = generate_expression e2 nstate {
+          rstate@State { 
+            output = routput, 
+            error_output = error_output 
+          } = generate_expression e2 nstate {
             output = noutput . string (
               "  " ++ condition ++ "\n\
               \  je L" ++ show label_id ++ "\n\
@@ -222,8 +253,20 @@ module Compiler where
       }
       EAnd _ _ _ -> generate_lazy_expression expr state
       EOr _ _ _ -> generate_lazy_expression expr state
-      ERel p e1 op e2 -> nstate { label_id = label_id + 2 } where
-        nstate@State { label_id = label_id } = merge_expressions p e1 e2 operation state
+      ERel _ e1 op e2 -> nstate { 
+        label_id = label_id + 2, 
+        error_output = error_output . error_one . error_two . error_not_same
+      } where
+        error_one = match_type e1 [IntegerValue, BooleanValue] state
+        error_two = match_type e2 [IntegerValue, BooleanValue] state
+        error_not_same = 
+          if error_one "" == "" && error_two "" == "" then
+            match_type e1 [(typeof e2 state)] state
+          else
+            string ""
+        nstate@State { 
+          label_id = label_id, error_output = error_output 
+        } = merge_expressions e1 e2 operation state
         mnemonic op = 
           case op of 
             LTH _ -> "jl"
@@ -240,7 +283,11 @@ module Compiler where
           \L" ++ (show label_id) ++ ": \n\
           \  push 1\n\
           \L" ++ (show (label_id + 1)) ++ ":\n"
-      EMul p e1 op e2 -> merge_expressions p e1 e2 operation state where
+      EMul _ e1 op e2 -> nstate { 
+        error_output = error_output . 
+          match_type e1 [IntegerValue] state . match_type e2 [IntegerValue] state
+      } where
+        nstate = merge_expressions e1 e2 operation state
         operation = case op of
           Times _ -> 
             "  imul rax, rcx \n\
@@ -253,46 +300,59 @@ module Compiler where
             "  mov rdx, 0\n\
             \  idiv rcx\n\
             \  push rdx\n"
-      EAdd p e1 op e2 -> merge_expressions p e1 e2 operation state where
-        operation = case op of
-          Plus _ -> case typeof e1 state of
-            IntegerValue ->
+      EAdd p e1 op e2 -> nstate { error_output = error_output . error } where
+        nstate@State { error_output = error_output } = 
+          merge_expressions e1 e2 operation state
+        (operation, error) = case op of
+          Plus _ -> case (typeof e1 state, typeof e2 state) of
+            (IntegerValue, IntegerValue) -> (
               "  add rax, rcx\n\
-              \  push rax\n"
-            StringValue ->
+              \  push rax\n", string "")
+            (StringValue, StringValue) -> (
               "  mov rdi, rax\n\
               \  mov rsi, rcx\n\
               \  call concatenate\n\
-              \  push rax\n"
-            _ -> ""
-          Minus _ ->
-            "  sub rax, rcx\n\
-            \  push rax\n"
+              \  push rax\n", string "")
+            (t1, t2) -> ("", 
+              type_mismatch_error p t1 t2 
+                "expected (StringValue, StringValue) or (IntegerValue, IntegerValue)")
+          Minus _ -> case (typeof e1 state, typeof e2 state) of
+            (IntegerValue, IntegerValue) -> (
+              "  sub rax, rcx\n\
+              \  push rax\n", string "")
+            (t1, t2) -> ("", type_mismatch_error p t1 t2 "expected (IntegerValue, IntegerValue)")
+          where 
+            type_mismatch_error p t1 t2 expected = 
+              if t1 /= ErrorValue && t2 /= ErrorValue then
+                string ((show p) ++ ": type mismatch: got (" ++ 
+                  (show t1) ++ ", " ++ (show t2) ++ "), " ++ expected ++ "\n")
+              else
+                string ""
       Not _ expr -> nstate {
         output = output . string 
           "  pop rax\n\
           \  not rax\n\
           \  and rax, 1\n\
-          \  push rax\n"
+          \  push rax\n",
+        error_output = error_output . match_type expr [BooleanValue] state
       } where
-        nstate@State { output = output } = generate_expression expr state
+        nstate@State { output = output, error_output = error_output } = generate_expression expr state
       Neg _ expr -> nstate {
         output = output . string 
           "  pop rax\n\
           \  not rax\n\
           \  add rax, 1\n\
-          \  push rax\n"
+          \  push rax\n",
+        error_output = error_output . match_type expr [IntegerValue] state
       } where
-        nstate@State { output = output } = generate_expression expr state
+        nstate@State { output = output, error_output = error_output } = generate_expression expr state
       where
-        merge_expressions position exp1 exp2 operation state =
+        merge_expressions exp1 exp2 operation state =
           rstate { 
-            output = output . string merge,
-            error_output = error_output . error
+            output = output . string merge
           } where
             rstate@State { 
-              output = output,
-              error_output = error_output
+              output = output
             } = generate_expression exp2 nstate
             nstate = generate_expression exp1 state
             merge = 
@@ -301,24 +361,21 @@ module Compiler where
               ++ operation
             type1 = typeof exp1 state
             type2 = typeof exp2 state
-            error = 
-              if type1 == type2 || type1 == ErrorValue || type2 == ErrorValue then 
-                string ""
-              else
-                string ((show position) ++ ": type mismatch (" ++ show type1 ++ ", " ++ show type2 ++ ")\n")
 
   generate_condition :: Show a => Expr a -> Stmt a -> Stmt a -> StateData -> StateData
   generate_condition exp stmt_true stmt_false state =
     rstate_next {
       output = routput . string(
         "L" ++ (show (label_id + 2)) ++ ":\n"
-      )
+      ),
+      error_output = error_output . match_type exp [BooleanValue] state
     } where
-      rstate_next@State { output = routput } = generate_statement stmt_false rstate {
-        output = noutput . string (
-          "  jmp L" ++ (show (label_id + 2)) ++ "\n\
-          \L" ++ (show (label_id + 1)) ++ ":\n"
-        )
+      rstate_next@State { output = routput, error_output = error_output } = 
+        generate_statement stmt_false rstate {
+          output = noutput . string (
+            "  jmp L" ++ (show (label_id + 2)) ++ "\n\
+            \L" ++ (show (label_id + 1)) ++ ":\n"
+          )
       } 
       rstate@State { output = noutput } = generate_statement stmt_true nstate { 
         output = output . string (
