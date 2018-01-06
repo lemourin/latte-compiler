@@ -62,6 +62,9 @@ module Compiler where
   load_variable idx destination =
     string ("  mov " ++ destination ++ ", qword [rbp - " ++ (show (8 * (idx + 1))) ++ "]\n")
 
+  push_variable idx =
+    string ("  push qword [rbp - " ++ (show (8 * (idx + 1))) ++ "]\n")
+
   load_argument idx =
     case argument_register idx of
       Just r -> set_variable idx r
@@ -315,7 +318,7 @@ module Compiler where
   generate_variable_load (EVar position ident) state@State { output = output, error_output = error_output } = 
     case location ident state of
       Just (_, idx) -> state {
-        output = output . (load_variable idx "rax") . string "  push rax\n"
+        output = output . push_variable idx
       }
       Nothing -> state {
         error_output = error_output . string (
