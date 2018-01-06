@@ -1,4 +1,5 @@
 SHELL = /bin/bash
+BNFC ?= /home/students/inf/PUBLIC/MRJP/bin/bnfc
 
 .SUFFIXES:
 
@@ -28,7 +29,7 @@ TestLatte: grammar/TestLatte.hs
 	ghc --make $< -o TestLatte
 
 grammar/ErrM.hs grammar/TestLatte.hs grammar/ParLatte.y grammar/LexLatte.x: grammar/Latte.cf
-	bnfc -o grammar --functor $<
+	$(BNFC) -o grammar --functor $<
 
 grammar/ParLatte.hs: grammar/ParLatte.y
 	happy -gca $<

@@ -619,19 +619,6 @@ module Compiler where
                 Nothing -> string ""
                 Just _ -> string ((show position) ++ ": variable " ++ (show ident) ++ " redeclared\n")
 
-  generate_cleanup :: StateData -> StateData
-  generate_cleanup state@State { environment_stack = env:rest } =
-    foldl merge state env where
-      merge state@State {
-        output = output
-      } (t, l) = case t of
-        StringValue -> state {
-          output = output . load_variable l "rdi" . string (
-            "  call free\n"
-          )
-        }
-        _ -> state
-  
   generate_block :: Show a => Block a -> StateData -> StateData
   generate_block (Block _ stmts) state = 
     foldl merge state stmts where
