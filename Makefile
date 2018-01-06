@@ -45,7 +45,7 @@ grammar/ParLatte.hs: grammar/ParLatte.y
 	nasm -f elf64 -o $@ $<
 
 %: %.o lib/runtime.o
-	gcc -o $@ $^
+	gcc -static -o $@ $^
 
 clean:
 	rm -f \
