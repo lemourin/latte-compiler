@@ -45,12 +45,7 @@ grammar/ParLatte.hs: grammar/ParLatte.y
 	nasm -f elf64 -o $@ $<
 
 %: %.o lib/runtime.o
-	ld -o $@ $^ -dynamic-linker \
-		/lib64/ld-linux-x86-64.so.2 \
-		/usr/lib/x86_64-linux-gnu/crt1.o \
-		/usr/lib/x86_64-linux-gnu/crti.o \
-		/usr/lib/x86_64-linux-gnu/crtn.o \
-		-lc -melf_x86_64
+	gcc -o $@ $^
 
 clean:
 	rm -f \
