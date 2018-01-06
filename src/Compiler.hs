@@ -239,7 +239,7 @@ module Compiler where
   generate_string :: String -> StateData -> StateData
   generate_string ('"':str) state@State { output = output } = state {
     output = output . string (
-      "  mov rdi, " ++ (show (length text)) ++ "\n\
+      "  mov rdi, " ++ (show ((length text) + 1)) ++ "\n\
       \  call malloc\n"
     ) . copy_string text . string (
       "  mov byte [rax + " ++ (show ((length str) - 1)) ++ "], 0\n\
