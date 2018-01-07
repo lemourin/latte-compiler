@@ -2,8 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define MAX_LENGTH 100
-
 void printInt(int n) { printf("%d\n", n); }
 
 void printHex(int n) { printf("%x\n", n); }
@@ -17,14 +15,21 @@ void error() {
 
 int readInt() {
   int n;
-  scanf("%d", &n);
+  scanf("%d\n", &n);
   return n;
 }
 
 const char* readString() {
-  char* result = malloc(MAX_LENGTH);
-  scanf("%s", result);
-  return result;
+  char* line;
+  size_t n = 0;
+  ssize_t result = getline(&line, &n, stdin);
+  if (result <= 0)
+    return NULL;
+  else {
+    if (line[result - 1] == '\n')
+      line[result - 1] = '\0';
+    return line;
+  }
 }
 
 const char* concatenate(const char* str1, const char* str2) {
