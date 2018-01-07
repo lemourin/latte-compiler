@@ -2,4 +2,4 @@
 
 BASENAME=`dirname $1`/`basename $1 .lat`
 
-make -f Makefile $BASENAME.s $BASENAME
+make -s -f Makefile $BASENAME.s $BASENAME
