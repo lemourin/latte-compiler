@@ -294,6 +294,10 @@ module Compiler where
   } =
     nstate {
       output = noutput . load_registers (length expr) . string (
+        -- "  push rdi\n\
+        -- \  mov rdi, rsp\n\
+        -- \  call printHex\n\
+        -- \  pop rdi\n\
         "  call " ++ id ++ "\n\
         \  add rsp, " ++ (show (8 * stack_slots)) ++ "\n\
         \  push rax\n"
@@ -583,9 +587,10 @@ module Compiler where
   } = 
     case stmt of
       Empty _ -> state
-      BStmt _ block -> generate_block block state {
-        environment_stack = Map.empty : environment_stack
-      }
+      BStmt _ block -> nstate { environment_stack = rest } where 
+        nstate@State { environment_stack = _ : rest } = generate_block block state {
+          environment_stack = Map.empty : environment_stack
+        }
       SExp _ exp -> nstate {
         output = output . string "  add rsp, 8\n",
         stack_size = stack_size - 1
