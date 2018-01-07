@@ -14,8 +14,16 @@ for i in `find $TEST_DIR -type f | sort | grep \\.lat$`; do
     exit 1;
   fi;
   if [ ! -f $TEST_DIR/$file.input ]; then
-    $TEST_DIR/$file | diff - $TEST_DIR/$file.output; 
+    $TEST_DIR/$file | diff - $TEST_DIR/$file.output;
+    if [ $? -ne 0 ]; then
+      echo "[FAIL] $file failed"
+      exit 1;
+    fi
   else 
-    $TEST_DIR/$file < $TEST_DIR/$file.input | diff - $TEST_DIR/$file.output; 
+    $TEST_DIR/$file < $TEST_DIR/$file.input | diff - $TEST_DIR/$file.output;
+    if [ $? -ne 0 ]; then
+      echo "[FAIL] $file failed"
+      exit 1;
+    fi
   fi; 
 done;
