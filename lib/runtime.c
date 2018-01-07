@@ -6,6 +6,8 @@
 
 void printInt(int n) { printf("%d\n", n); }
 
+void printHex(int n) { printf("%x\n", n); }
+
 void printString(const char* str) { printf("%s\n", str ? str : ""); }
 
 void error() {

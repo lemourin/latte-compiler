@@ -29,12 +29,13 @@ module Compiler where
     output :: StringData,
     local_id :: Integer,
     label_id :: Integer,
+    stack_size :: Integer,
     current_function :: ValueType
   }
 
   string s = (++) s
   
-  state_empty = State [] ("" ++) ("" ++) 0 0 ErrorValue
+  state_empty = State [] ("" ++) ("" ++) 0 0 0 ErrorValue
 
   argument_register i = 
     if i < 6 then
@@ -240,16 +241,18 @@ module Compiler where
         _ -> 0
 
   generate_string :: String -> StateData -> StateData
-  generate_string ('"':str) state@State { output = output } = state {
-    output = output . string (
-      "  mov rdi, " ++ (show ((length text) + 1)) ++ "\n\
-      \  call malloc\n"
-    ) . copy_string text . string (
-      "  mov byte [rax + " ++ (show ((length str) - 1)) ++ "], 0\n\
-      \  push rax\n"
-    )
+  generate_string ('"':str) state = nstate {
+    output = output . copy_string text . string (
+      "  mov byte [rax + " ++ (show ((length str) - 1)) ++ "], 0\n"
+    ),
+    stack_size = stack_size + 1
   } where
     text = init str
+    nstate@State { output = output, stack_size = stack_size } = 
+      generate_function_call 
+        (EApp "" (Ident "malloc") 
+        [ELitInt "" ((fromIntegral (length text)) + 1)]) 
+        state
     copy_string str =
       foldl merge (string "") (zip str [0..]) where
         merge str (letter, idx) =
@@ -265,12 +268,14 @@ module Compiler where
           output = routput . string (
             "L" ++ (show label_id) ++ ":\n"
           ),
+          stack_size = stack_size - 1,
           error_output = error_output . match_type e1 [BooleanValue] state . 
             match_type e2 [BooleanValue] state
       } where
           rstate@State { 
             output = routput, 
-            error_output = error_output 
+            error_output = error_output,
+            stack_size = stack_size
           } = generate_expression e2 nstate {
             output = noutput . string (
               "  " ++ condition ++ "\n\
@@ -283,19 +288,31 @@ module Compiler where
           }
 
   generate_function_call :: Show a => Expr a -> StateData -> StateData
-  generate_function_call (EApp position ident@(Ident id) expr) state =
+  generate_function_call (EApp position ident@(Ident id) expr) state@State {
+    output = output,
+    stack_size = stack_size
+  } =
     nstate {
-      output = output . load_registers (length expr) . string (
+      output = noutput . load_registers (length expr) . string (
         "  call " ++ id ++ "\n\
-        \  add rsp, " ++ (show (8 * (max 0 ((length expr) - 6)))) ++ "\n\
+        \  add rsp, " ++ (show (8 * stack_slots)) ++ "\n\
         \  push rax\n"
       ),
-      error_output = error_output . error
+      error_output = error_output . error,
+      stack_size = nstack_size - fromIntegral (length expr) - (if stack_align then 1 else 0) + 1
     } where
       nstate@State { 
-        output = output, error_output = error_output 
-      } = foldl merge state (reverse expr)
+        output = noutput, error_output = error_output, stack_size = nstack_size
+      } = foldl merge state {
+        output = output . 
+          -- string ("; stack_size = " ++ (show stack_size) ++ "\n") . 
+          string (if stack_align then "  sub rsp, 8\n" else ""),
+        stack_size = stack_size + (if stack_align then 1 else 0)
+      } (reverse expr)
       merge state e = generate_expression e state
+      stack_align = ((stack_arguments + stack_size) `mod` 2) == 0
+      stack_arguments = toInteger (max 0 ((length expr) - 6))
+      stack_slots = stack_arguments + (if stack_align then 1 else 0)
       error = case location ident state of
         Nothing -> string ((show position) ++ ": undefined function call " ++ id ++ "\n")
         Just ((FunctionValue _ args), _) -> 
@@ -315,10 +332,13 @@ module Compiler where
         _ -> string (id ++ " at " ++ (show position) ++ " is not a function\n")
   
   generate_variable_load :: Show a => Expr a -> StateData -> StateData
-  generate_variable_load (EVar position ident) state@State { output = output, error_output = error_output } = 
+  generate_variable_load (EVar position ident) state@State { 
+    output = output, error_output = error_output, stack_size = stack_size
+  } = 
     case location ident state of
       Just (_, idx) -> state {
-        output = output . push_variable idx
+        output = output . push_variable idx,
+        stack_size = stack_size + 1
       }
       Nothing -> state {
         error_output = error_output . string (
@@ -333,7 +353,8 @@ module Compiler where
   generate_expression_aux expr state@State {
     output = output, 
     error_output = error_output, 
-    label_id = label_id 
+    label_id = label_id,
+    stack_size = stack_size
   } =
     case expr of
       EVar _ _ -> generate_variable_load expr state
@@ -342,13 +363,15 @@ module Compiler where
       EString _ str -> generate_string str state
       EApp _ _ _ -> generate_function_call expr state
       ELitInt _ int -> state {
-        output = output . string ("  push " ++ (show int) ++ "\n")
+        output = output . string ("  push " ++ (show int) ++ "\n"),
+        stack_size = stack_size + 1
       }
       EAnd _ _ _ -> generate_lazy_expression expr state
       EOr _ _ _ -> generate_lazy_expression expr state
       ERel _ e1 op e2 -> nstate { 
         label_id = label_id + 2, 
-        error_output = error_output . error_one . error_two . error_not_same
+        error_output = error_output . error_one . error_two . error_not_same,
+        stack_size = stack_size - 1
       } where
         error_one = match_type e1 [IntegerValue, BooleanValue] state
         error_two = match_type e2 [IntegerValue, BooleanValue] state
@@ -358,7 +381,7 @@ module Compiler where
           else
             string ""
         nstate@State { 
-          label_id = label_id, error_output = error_output 
+          label_id = label_id, error_output = error_output, stack_size = stack_size
         } = merge_expressions e1 e2 operation state
         mnemonic op = 
           case op of 
@@ -378,9 +401,11 @@ module Compiler where
           \L" ++ (show (label_id + 1)) ++ ":\n"
       EMul _ e1 op e2 -> nstate { 
         error_output = error_output . 
-          match_type e1 [IntegerValue] state . match_type e2 [IntegerValue] state
+          match_type e1 [IntegerValue] state . match_type e2 [IntegerValue] state,
+        stack_size = stack_size - 1
       } where
-        nstate = merge_expressions e1 e2 operation state
+        nstate@State { error_output = error_output, stack_size = stack_size } =
+          merge_expressions e1 e2 operation state
         operation = case op of
           Times _ -> 
             "  imul rax, rcx \n\
@@ -393,8 +418,10 @@ module Compiler where
             "  mov rdx, 0\n\
             \  idiv rcx\n\
             \  push rdx\n"
-      EAdd p e1 op e2 -> nstate { error_output = error_output . error } where
-        nstate@State { error_output = error_output } = 
+      EAdd p e1 op e2 -> nstate {
+        error_output = error_output . error, stack_size = stack_size - 1 
+      } where
+        nstate@State { error_output = error_output, stack_size = stack_size } = 
           merge_expressions e1 e2 operation state
         (operation, error) = case op of
           Plus _ -> case (typeof e1 state, typeof e2 state) of
@@ -478,10 +505,11 @@ module Compiler where
           \  jmp L" ++ (show (label_id + 1)) ++ "\n\
           \L" ++ show label_id ++ ":\n"
         ),
-        label_id = label_id + 3
+        label_id = label_id + 3,
+        stack_size = stack_size - 1
       }
       nstate@State { 
-        output = output, label_id = label_id 
+        output = output, label_id = label_id, stack_size = stack_size
       } = generate_expression exp state
 
   generate_while :: Show a => Stmt a -> StateData -> StateData
@@ -500,9 +528,10 @@ module Compiler where
           "  pop rax\n\
           \  cmp rax, 0\n\
           \  je L" ++ show (label_id + 1) ++ "\n"
-        )
+        ),
+        stack_size = stack_size - 1
       }
-      nstate@State { output = noutput } = generate_expression exp state { 
+      nstate@State { output = noutput, stack_size = stack_size } = generate_expression exp state { 
         output = output . string ("L" ++ (show label_id) ++ ":\n"),
         label_id = label_id + 2
       }
@@ -511,9 +540,11 @@ module Compiler where
   generate_assignment (Ass position ident exp) state = 
     nstate {
         output = output . (string "  pop rax\n") . (set_variable idx "rax"),
-        error_output = error_output . error
+        error_output = error_output . error,
+        stack_size = stack_size - 1
       } where 
-        nstate@State { output = output, error_output = error_output } = generate_expression exp state
+        nstate@State { output = output, error_output = error_output, stack_size = stack_size } = 
+          generate_expression exp state
         (idx, error) = case location ident nstate of 
           Just (t, idx) -> 
             if t == exptype || exptype == ErrorValue then
@@ -547,14 +578,19 @@ module Compiler where
     output = output,
     error_output = error_output,
     environment_stack = environment_stack,
-    current_function = FunctionValue return_type _ 
+    current_function = FunctionValue return_type _ ,
+    stack_size = stack_size
   } = 
     case stmt of
       Empty _ -> state
       BStmt _ block -> generate_block block state {
         environment_stack = Map.empty : environment_stack
       }
-      SExp _ exp -> generate_expression exp state
+      SExp _ exp -> nstate {
+        output = output . string "  add rsp, 8\n",
+        stack_size = stack_size - 1
+      } where
+        nstate@State { output = output, stack_size = stack_size } = generate_expression exp state
       Cond a exp stmt -> generate_condition exp stmt (Empty a) state
       CondElse _ exp stmt1 stmt2 -> generate_condition exp stmt1 stmt2 state
       While _ _ _ -> generate_while stmt state
@@ -562,7 +598,8 @@ module Compiler where
         output = output . string
           "  leave\n\
           \  ret\n",
-        error_output = error_output . error
+        error_output = error_output . error,
+        stack_size = stack_size - 1
       } where 
         error = if return_type == VoidValue then
           string ""
@@ -573,9 +610,11 @@ module Compiler where
           "  pop rax\n\
           \  leave\n\
           \  ret\n",
-        error_output = error_output . error
+        error_output = error_output . error,
+        stack_size = stack_size - 1
       } where
-        nstate@State { output = output, error_output = error_output } = generate_expression expr state
+        nstate@State { output = output, error_output = error_output, stack_size = stack_size } = 
+          generate_expression expr state
         error = 
           if exptype /= return_type && exptype /= ErrorValue then
             string ((show position) ++ ": return value mismatch: expected " ++ 
@@ -604,12 +643,14 @@ module Compiler where
               environment_stack = (Map.insert ident ((to_value_type t), local_id) env) : rest,
               output = output . (string "  pop rax\n") . (set_variable local_id "rax"),
               error_output = error_output . (error position ident env) . type_error,
-              local_id = local_id + 1
+              local_id = local_id + 1,
+              stack_size = stack_size - 1
             } where
               nstate@State { 
                 output = output,
                 error_output = error_output,
-                environment_stack = env : rest
+                environment_stack = env : rest,
+                stack_size = stack_size
               } = generate_expression expr state
               exptype = typeof expr state
               type_error = if (exptype /= (to_value_type t)) && (exptype /= ErrorValue) then
@@ -647,7 +688,8 @@ module Compiler where
           error_output = error_output . error,
           environment_stack = argument_map:environment_stack,
           local_id = toInteger (length args),
-          current_function = FunctionValue (to_value_type t) (map (\(Arg _ t _) -> to_value_type t) args)
+          current_function = FunctionValue (to_value_type t) (map (\(Arg _ t _) -> to_value_type t) args),
+          stack_size = fromIntegral (1 + ((required_stack function) `div` 8))
         }
         (argument_map, error) = foldl insert (Map.empty, string "") (zip args [0..]) where
           insert (map, error) ((Arg position t ident), idx) =
@@ -683,7 +725,8 @@ module Compiler where
             (Ident "printString", (FunctionValue VoidValue [StringValue], 0)),
             (Ident "error", (FunctionValue VoidValue [], 0)),
             (Ident "readInt", (FunctionValue IntegerValue [], 0)),
-            (Ident "readString", (FunctionValue StringValue [], 0))
+            (Ident "readString", (FunctionValue StringValue [], 0)),
+            (Ident "malloc", (FunctionValue ErrorValue [IntegerValue], 0))
           ]],
           output = string (
             "section .text\n\n\
@@ -691,6 +734,7 @@ module Compiler where
             \extern malloc\n\
             \extern free\n\
             \extern concatenate\n\
+            \extern printHex\n\
             \extern printInt\n\
             \extern printString\n\
             \extern error\n\
