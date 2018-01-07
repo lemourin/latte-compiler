@@ -92,7 +92,7 @@ module Compiler where
     case operator of
       Times _ -> (*)
       Div _ -> (div)
-      Mod _ -> (mod)
+      Mod _ -> \a b -> (signum a) * ((abs a) `mod` (abs b))
 
   additive_function operator =
     case operator of
