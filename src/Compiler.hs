@@ -30,12 +30,14 @@ module Compiler where
     local_id :: Integer,
     label_id :: Integer,
     stack_size :: Integer,
+    string_set :: [String],
+    string_count :: Integer,
     current_function :: ValueType
   }
 
   string s = (++) s
   
-  state_empty = State [] ("" ++) ("" ++) 0 0 0 ErrorValue
+  state_empty = State [] ("" ++) ("" ++) 0 0 0 [] 0 ErrorValue
 
   argument_register i = 
     if i < 6 then
@@ -241,22 +243,25 @@ module Compiler where
         _ -> 0
 
   generate_string :: String -> StateData -> StateData
-  generate_string ('"':str) state = nstate {
-    output = output . copy_string text . string (
-      "  mov byte [rax + " ++ (show ((length str) - 1)) ++ "], 0\n"
-    ),
-    stack_size = stack_size + 1
+  generate_string ('"':str) state@State { 
+    output = output, 
+    string_set = string_set, 
+    string_count = string_count, 
+    stack_size = stack_size
+  } = state {
+    output = output . stack_align_prologue . string (
+      "  mov rdi, str" ++ (show string_count) ++ "\n\
+      \  call strdup\n\
+      \  push rax\n"
+    ) . stack_align_epilogue,
+    stack_size = stack_size + 1,
+    string_set = text : string_set,
+    string_count = string_count + 1
   } where
     text = init str
-    nstate@State { output = output, stack_size = stack_size } = 
-      generate_function_call 
-        (EApp "" (Ident "malloc") 
-        [ELitInt "" ((fromIntegral (length text)) + 1)]) 
-        state
-    copy_string str =
-      foldl merge (string "") (zip str [0..]) where
-        merge str (letter, idx) =
-          str . string ("  mov byte [rax + " ++ (show idx) ++ "], '" ++ (letter:[]) ++ "'\n")
+    stack_align = False --(stack_size `mod` 2) == 0
+    stack_align_prologue = string (if stack_align then "  sub rsp, 8\n" else "")
+    stack_align_epilogue = string (if stack_align then "  add rsp, 8\n" else "")
 
   generate_lazy_expression :: Show a => Expr a -> StateData -> StateData
   generate_lazy_expression expr state@State { label_id = label_id } =
@@ -720,8 +725,13 @@ module Compiler where
 
   compile :: Show a => Program a -> StateData -> StateData
   compile (Program d code) state =
-    result initial_state where
-      result state = foldl merge state code where
+    result {
+      output = string_section . string "\n" . output
+    } where
+      result@State { output = output, string_set = string_set } = preresult initial_state
+      string_section = foldl merge (string "section .data\n\n") (zip (reverse string_set) [0..]) where
+        merge result (str, idx) = result . string ("str" ++ (show idx) ++ ": db `" ++ str ++ "\\0`\n")
+      preresult state = foldl merge state code where
         merge state func = compile_function func state
       initial_state = 
         foldl merge state { 
@@ -730,14 +740,12 @@ module Compiler where
             (Ident "printString", (FunctionValue VoidValue [StringValue], 0)),
             (Ident "error", (FunctionValue VoidValue [], 0)),
             (Ident "readInt", (FunctionValue IntegerValue [], 0)),
-            (Ident "readString", (FunctionValue StringValue [], 0)),
-            (Ident "malloc", (FunctionValue ErrorValue [IntegerValue], 0))
+            (Ident "readString", (FunctionValue StringValue [], 0))
           ]],
           output = string (
             "section .text\n\n\
             \global main\n\n\
-            \extern malloc\n\
-            \extern free\n\
+            \extern strdup\n\
             \extern concatenate\n\
             \extern printHex\n\
             \extern printInt\n\
