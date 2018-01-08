@@ -251,15 +251,14 @@ module Compiler where
   } = state {
     output = output . stack_align_prologue . string (
       "  mov rdi, str" ++ (show string_count) ++ "\n\
-      \  call strdup\n\
-      \  push rax\n"
-    ) . stack_align_epilogue,
+      \  call strdup\n"
+    ) . stack_align_epilogue . string "  push rax\n",
     stack_size = stack_size + 1,
     string_set = text : string_set,
     string_count = string_count + 1
   } where
     text = init str
-    stack_align = False --(stack_size `mod` 2) == 0
+    stack_align = (stack_size `mod` 2) == 0
     stack_align_prologue = string (if stack_align then "  sub rsp, 8\n" else "")
     stack_align_epilogue = string (if stack_align then "  add rsp, 8\n" else "")
 
@@ -314,7 +313,7 @@ module Compiler where
         output = noutput, error_output = error_output, stack_size = nstack_size
       } = foldl merge state {
         output = output . 
-          -- string ("; stack_size = " ++ (show stack_size) ++ "\n") . 
+          -- string ("; stack_size = " ++ (show stack_size) ++ "\n") .
           string (if stack_align then "  sub rsp, 8\n" else ""),
         stack_size = stack_size + (if stack_align then 1 else 0)
       } (reverse expr)
@@ -614,7 +613,8 @@ module Compiler where
         error = if return_type == VoidValue then
           string ""
         else
-          string ((show position) ++ ": return value mismatch: expected " ++ (show return_type) ++ " got VoidValue\n")
+          string ((show position) ++ 
+            ": return value mismatch: expected " ++ (show return_type) ++ " got VoidValue\n")
       Ret position expr -> nstate { 
         output = output . string 
           "  pop rax\n\
@@ -693,12 +693,16 @@ module Compiler where
         error_output = nerror_output . function_error,
         current_function = current_function
       } where
-        nstate@State { output = noutput, error_output = nerror_output } = generate_block block state {
+        nstate@State { 
+          output = noutput, 
+          error_output = nerror_output 
+        } = generate_block block state {
           output = output . prologue, 
           error_output = error_output . error,
           environment_stack = argument_map:environment_stack,
           local_id = toInteger (length args),
-          current_function = FunctionValue (to_value_type t) (map (\(Arg _ t _) -> to_value_type t) args),
+          current_function = 
+            FunctionValue (to_value_type t) (map (\(Arg _ t _) -> to_value_type t) args),
           stack_size = fromIntegral (1 + ((required_stack function) `div` 8))
         }
         (argument_map, error) = foldl insert (Map.empty, string "") (zip args [0..]) where
