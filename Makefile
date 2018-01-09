@@ -1,5 +1,6 @@
-SHELL = /bin/bash
+SHELL ?= /bin/bash
 BNFC ?= /home/students/inf/PUBLIC/MRJP/bin/bnfc
+CC ?= gcc
 
 .SUFFIXES:
 .PHONY: FORCE
@@ -46,7 +47,7 @@ grammar/ParLatte.hs: grammar/ParLatte.y
 	nasm -f elf64 -o $@ $<
 
 %: %.o lib/runtime.o
-	gcc -static -o $@ $^
+	$(CC) -o $@ $^
 
 clean:
 	rm -f \
