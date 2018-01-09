@@ -1,0 +1,33 @@
+KOMPILATOR LATTE
+================
+
+# Kompilacja na students:
+
+* `make`
+
+# Przykładowe uruchamianie programu:
+
+* `./latc_x86_64 test.lat`
+
+# Optymalizacje:
+
+* stos wyrównany do 16 bajtów
+
+* wyliczanie stałych wyrażeń w trakcie kompilacji
+  * np kod `int a = 2 + 3 * 4;` zostanie zamieniony w `int a = 14;`
+
+# Zaimplementowane rozszerzenia:
+
+* brak
+
+# Używane narzędzia i biblioteki:
+
+* Haskell
+* BNFC (wzbogacone o pozycje tokenów w drzewie AST)
+
+# Struktura katalogów:
+
+* src/      - źródła kompilatora
+* lib/      - funkcje pomocnicze napisane w C
+* grammar/  - zawiera gramatykę i kod wygenerowany przez BNFC
+* examples/ - przykładowe programy
