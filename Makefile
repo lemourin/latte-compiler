@@ -2,6 +2,7 @@ SHELL = /bin/bash
 BNFC ?= /home/students/inf/PUBLIC/MRJP/bin/bnfc
 
 .SUFFIXES:
+.PHONY: FORCE
 
 BNFC_SOURCES = \
 	grammar/ParLatte.hs \
@@ -34,7 +35,7 @@ grammar/ErrM.hs grammar/TestLatte.hs grammar/ParLatte.y grammar/LexLatte.x: gram
 grammar/ParLatte.hs: grammar/ParLatte.y
 	happy -gca $<
 
-%.s: %.lat latc_x86_64_run
+%.s: %.lat latc_x86_64_run FORCE
 	./latc_x86_64_run < $< > $@; \
 	if [ $$? -ne 0 ]; then \
 		rm $@; \

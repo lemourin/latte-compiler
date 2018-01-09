@@ -11,9 +11,11 @@ main = do
   input <- getContents
   case latte input of
     Ok str -> do
+      hPutStrLn stderr "OK"
       putStr str
       exitSuccess
     Bad str -> do
+      hPutStrLn stderr "ERROR"
       hPutStr stderr str
       exitFailure
 
