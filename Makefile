@@ -9,6 +9,7 @@ BNFC_SOURCES = \
 	grammar/ParLatte.hs \
 	grammar/AbsLatte.hs \
 	grammar/LexLatte.hs \
+	grammar/PrintLatte.hs \
 	grammar/ErrM.hs
 
 LATTE_SOURCES = \
@@ -47,7 +48,7 @@ grammar/ParLatte.hs: grammar/ParLatte.y
 	nasm -f elf64 -o $@ $<
 
 %: %.o lib/runtime.o
-	$(CC) -o $@ $^
+	$(CC) $(CFLAGS) -o $@ $^
 
 clean:
 	rm -f \
