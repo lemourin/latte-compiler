@@ -65,7 +65,6 @@ location ident state@State { environment_stack = env } =
       Nothing -> Map.lookup ident e
       _ -> current
 
-
 show_variable idx = string ("qword [rbp - " ++ (show (8 * (idx + 1))) ++ "]")
 
 set_variable idx value =
@@ -253,6 +252,7 @@ typeof expr state =
       LValueArray p l _ -> case typeof (EVar p l) state of
         ArrayValue t -> t
         _ -> ErrorValue
+      LValueField p f ident -> ErrorValue
 
 match_type :: Show a => Expr a -> [ValueType] -> StateData -> StringData
 match_type exp t state = 
@@ -375,6 +375,7 @@ generate_find_variable :: Show a => Expr a -> StateData -> StateData
 generate_find_variable expr@(EVar position lvalue) state@State {
   output = output, error_output = error_output, stack_size = stack_size
 } = case lvalue of
+  LValueField _ lvalue field -> state
   LValueIdent _ ident -> case location ident state of
     Just (t, idx) -> state {
       output = output . string (
@@ -419,9 +420,14 @@ generate_variable_load expr@(EVar position lvalue) state@State {
 generate_array :: Show a => Expr a -> StateData -> StateData
 generate_array (EArray p t expr) state = 
   nstate {
-    output = output . string "  pop rdi\n  call array_new\n  push rax\n"
+    output = output . string ("  pop rdi\n  call " ++ array_create ++ "\n  push rax\n")
   } where 
-    nstate@State { output = output } = generate_expression expr state 
+    nstate@State { output = output } = generate_expression expr state
+    array_create = 
+      if is_refcounted (to_value_type t) then
+        "array_object_new"
+      else
+        "array_new"
 
 generate_relation_expression :: Show a => Expr a -> StateData -> StateData
 generate_relation_expression (ERel p e1 op e2) state = 
@@ -713,13 +719,10 @@ generate_return :: Show a => Stmt a -> StateData ->StateData
 generate_return (Ret position expr) state@State {
   current_function = FunctionValue return_type _
 } = nstate {
-  output = output . string "  mov rbx, 1\n" . 
-    string increase_ref . string ret,
+  output = output . string "  mov rbx, 1\n" . string ret,
   error_output = error_output . error,
   stack_size = stack_size - 1
 } where
-  increase_ref = 
-    if is_refcounted return_type then "  mov rdi, [rsp]\n  call increase_refcount\n" else ""
   ret = case parent_block of
     Nothing -> ""
     Just i -> "  jmp B" ++ show i ++ "\n"
@@ -750,7 +753,7 @@ generate_return_void (VRet position) state@State {
   error_output = error_output . error,
   stack_size = stack_size - 1
 } where
-  ret = case parent_block of 
+  ret = case parent_block of
     Nothing -> ""
     Just i -> "  jmp B" ++ show i ++ "\n" 
   error = if return_type == VoidValue then
@@ -917,6 +920,7 @@ compile (Program d code) state =
           "section .text\n\n\
           \global main\n\n\
           \extern array_new\n\
+          \extern array_object_new\n\
           \extern array_get\n\
           \extern string_new\n\
           \extern string_concatenate\n\

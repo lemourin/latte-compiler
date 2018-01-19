@@ -57,7 +57,6 @@ int readInt() {
 }
 
 void string_free(void* d) {
-  //printf("releasing %p\n", d);
   struct string* r = (struct string*)d;
   free(r->data_);
   r->data_ = NULL;
@@ -75,11 +74,22 @@ struct string* string_new(const char* str) {
 }
 
 void array_free(void* d) {
-  struct array* r = malloc(sizeof(struct array));
+  struct array* r = (struct array*)d;
   free(r->data_);
   r->data_ = NULL;
   free(r);
-  printf("~array() %p\n", d);
+  //printf("~array() %p\n", d);
+}
+
+void array_object_free(void* d) {
+  struct array* r = (struct array*)d;
+  for (size_t i = 0; i < r->length_; i++) {
+    decrease_refcount((void*)(r->data_[i]));
+  }
+  free(r->data_);
+  r->data_ = NULL;
+  free(r);
+  //printf("~array_object() %p\n", d);
 }
 
 struct array* array_new(size_t length) {
@@ -92,7 +102,14 @@ struct array* array_new(size_t length) {
   return r;
 }
 
+struct array* array_object_new(size_t length) {
+  struct array* r = array_new(length);
+  r->release_ = array_object_free;
+  return r;
+}
+
 void* array_get(struct array* array, size_t idx) {
+  //decrease_refcount(array);
   //printf("gettingarray %p, %lu\n", array, array->ref_count_);
   return array->data_ + idx;
 }

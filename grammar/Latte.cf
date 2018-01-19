@@ -6,11 +6,26 @@ Program.   Program ::= [TopDef] ;
 
 FnDef.	   TopDef ::= Type Ident "(" [Arg] ")" Block ;
 
+ClassDef.  TopDef ::= DeclClass ;
+
+ClassExtends. DeclClass ::= "class" Ident "extends" Ident "{" [ClassElement] "}" ;
+
+ClassBase.    DeclClass ::= "class" Ident "{" [ClassElement] "}" ;
+
 separator nonempty TopDef "" ;
 
 Arg. 	   Arg ::= Type Ident;
 
 separator  Arg "," ;
+
+-- classes -------------------------------------------------
+
+ClassField.  ClassElement ::= Type [CItem] ;
+ClassMethod. ClassElement ::= Type Ident "(" [Arg] ")" Block ;
+ClassItem.   CItem        ::= Ident ;
+
+separator CItem "," ;
+separator ClassElement "" ;
 
 -- statements ----------------------------------------------
 
@@ -48,6 +63,8 @@ While.     Stmt ::= "while" "(" Expr ")" Stmt ;
 
 SExp.      Stmt ::= Expr  ";" ;
 
+ForEach.    Stmt ::= "for" "(" Type Ident ":" Expr ")" Stmt ;
+
 LValueIdent. LValue ::= Ident ;
 
 LValueArray. LValue ::= LValue "[" Expr "]" ;
@@ -65,6 +82,8 @@ Bool.      Type ::= "boolean" ;
 Void.      Type ::= "void" ;
 
 Array.     Type ::= Type "[]" ;
+
+Class.     Type ::= Ident ;
 
 internal   Fun. Type ::= Type "(" [Type] ")" ;
 
