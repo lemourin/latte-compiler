@@ -25,6 +25,12 @@ type Environment = Map.Map Ident (ValueType, Location)
 
 type StringData = String -> String
 
+data ClassData = Class {
+  field :: Map.Map Ident (ValueType, Integer),
+  method :: Map.Map Ident (ValueType, Ident),
+  base :: Maybe Ident
+} deriving (Eq, Show)
+
 data StateData = State {
   environment_stack :: [Environment],
   error_output :: StringData,
@@ -38,12 +44,13 @@ data StateData = State {
   current_function :: ValueType,
   current_block :: Maybe Integer,
   parent_block :: Maybe Integer,
+  class_data :: Map.Map Ident ClassData,
   refcounted_variables :: [Integer]
 }
 
 string s = (++) s
 
-state_empty = State [] ("" ++) ("" ++) 0 0 0 0 [] 0 ErrorValue Nothing Nothing []
+state_empty = State [] ("" ++) ("" ++) 0 0 0 0 [] 0 ErrorValue Nothing Nothing Map.empty []
 
 argument_register i = 
   if i < 6 then
@@ -893,9 +900,37 @@ generate_function
       else
         string ""
 
-compile_function :: Show a => TopDef a -> StateData -> StateData 
-compile_function func@(FnDef _ t ident _ block) state@State { output = output } =
-  generate_function func state
+generate_class_definition :: Show a => TopDef a -> StateData -> StateData
+generate_class_definition (ClassDef _ def) state =
+  case def of
+    ClassBase _ ident elem -> state
+
+compile_top_definition :: Show a => TopDef a -> StateData -> StateData 
+compile_top_definition def state=
+  case def of
+    FnDef _ _ _ _ _ -> generate_function def state
+    ClassDef _ _ -> generate_class_definition def state
+
+get_top_definition :: Show a => TopDef a -> StateData -> StateData
+get_top_definition definition state@State{ 
+  environment_stack = [env], error_output = error_output 
+} = 
+  case definition of
+    FnDef position t ident args _ -> state { 
+      environment_stack = [Map.insert ident (func_type, 0) env],
+      error_output = error_output . error 
+    } where
+      func_type = FunctionValue (to_value_type t) (map (\(Arg _ t _) -> to_value_type t) args)
+      error = case Map.lookup ident env of
+        Nothing -> string ""
+        Just _ -> string ((show position) ++ ": function " ++ show ident ++ " redeclared\n")
+    ClassDef _ d -> 
+      case d of 
+        ClassExtends _ ident base defs -> collect ident base defs state
+        ClassBase _ ident defs -> collect ident (Ident "Object") defs state
+      where
+        collect ident base defs state = foldl merge state defs
+        merge state d = state
 
 compile :: Show a => Program a -> StateData -> StateData
 compile (Program d code) state =
@@ -906,9 +941,9 @@ compile (Program d code) state =
     string_section = foldl merge (string "section .data\n\n") (zip (reverse string_set) [0..]) where
       merge result (str, idx) = result . string ("str" ++ (show idx) ++ ": db `" ++ str ++ "\\0`\n")
     preresult state = foldl merge state code where
-      merge state func = compile_function func state
+      merge state def = compile_top_definition def state
     initial_state = 
-      foldl merge state { 
+      foldl (\a b -> get_top_definition b a) state { 
         environment_stack = [Map.fromList [
           (Ident "printInt", (FunctionValue VoidValue [IntegerValue], 0)),
           (Ident "printString", (FunctionValue VoidValue [StringValue], 0)),
@@ -933,17 +968,6 @@ compile (Program d code) state =
           \extern readInt\n\
           \extern readString\n\n"
         )
-      } code where
-        merge state@State{ 
-          environment_stack = [env], error_output = error_output 
-        } (FnDef position t ident args _) = 
-          state { 
-            environment_stack = [Map.insert ident (func_type, 0) env],
-            error_output = error_output . error 
-          } where
-            func_type = FunctionValue (to_value_type t) (map (\(Arg _ t _) -> to_value_type t) args)
-            error = case Map.lookup ident env of
-              Nothing -> string ""
-              Just _ -> string ((show position) ++ ": function " ++ show ident ++ " redeclared\n")
+      } code
 
 

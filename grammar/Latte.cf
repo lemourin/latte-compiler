@@ -20,11 +20,11 @@ separator  Arg "," ;
 
 -- classes -------------------------------------------------
 
-ClassField.  ClassElement ::= Type [CItem] ;
+ClassField.  ClassElement ::= Type [CItem] ";" ;
 ClassMethod. ClassElement ::= Type Ident "(" [Arg] ")" Block ;
 ClassItem.   CItem        ::= Ident ;
 
-separator CItem "," ;
+separator nonempty CItem "," ;
 separator ClassElement "" ;
 
 -- statements ----------------------------------------------
