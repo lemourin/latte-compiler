@@ -98,6 +98,30 @@ load_argument idx =
     Nothing -> 
       string ("  mov rax, " ++ "[rbp + " ++ (show (8 * (idx - 6 + 2))) ++ "]\n") . set_variable idx "rax"
 
+class_struct expr state@State { class_data = class_data } =
+  case typeof expr state of
+    ArrayValue _ -> (class_empty (ClassValue (Ident "_object"))) {
+      field = Map.fromList [(Ident "length", (IntegerValue, 0))]
+    }
+    name -> case Map.lookup name class_data of
+      Just t -> t
+
+class_offset cls@ClassData { base = base, field = class_field } field state = 
+  offset where
+    Just base_offset = sizeof base state
+    Just (_, field_offset) = Map.lookup field class_field
+    offset = base_offset + (fromInteger field_offset)
+
+from_value_type :: Show a => a -> ValueType -> Type a
+from_value_type p t =
+  case t of
+    IntegerValue -> Int p
+    StringValue -> Str p
+    BooleanValue -> Bool p
+    VoidValue -> Void p
+    ArrayValue q -> Array p (from_value_type p q)
+    ClassValue id -> Class p id
+
 to_value_type :: Show a => Type a -> ValueType
 to_value_type t =
   case t of
@@ -256,6 +280,12 @@ typeof expr state@State { class_data = class_data } =
     EApp _ ident _ -> case location ident state of
       Just (FunctionValue t _, _) -> t
       Nothing -> ErrorValue
+    EArrayGet _ e _ -> case typeof e state of
+      ArrayValue t -> t
+      _ -> ErrorValue
+    EFieldGet _ e ident -> case typeof e state of
+      t@(ArrayValue _) -> if ident == Ident "length" then IntegerValue else ErrorValue
+      t@(ClassValue _) -> ErrorValue
     ELitInt _ _ -> IntegerValue
     ELitTrue _ -> BooleanValue
     ELitFalse _ -> BooleanValue
@@ -429,17 +459,8 @@ generate_find_variable expr@(EVar position lvalue) state@State {
       \  push rax\n"
     ),
     error_output = error_output
-  } where
-    cls@ClassData { field = class_field, base = base } =
-      case typeof (EVar position lvalue) state of
-        ArrayValue _ -> (class_empty (ClassValue (Ident "_object"))) {
-          field = Map.fromList [(Ident "length", (IntegerValue, 0))]
-        }
-        name -> case Map.lookup name class_data of
-          Just t -> t
-    Just base_offset = sizeof base state
-    Just (_, field_offset) = Map.lookup field class_field
-    offset = base_offset + (fromInteger field_offset)
+  } where 
+    offset = class_offset (class_struct (EVar position lvalue) state) field state
     nstate@State{ output = output, error_output = error_output } = 
       generate_find_variable (EVar position lvalue) state
   LValueIdent _ ident -> case location ident state of
@@ -607,6 +628,43 @@ generate_expression expr state@State { output = output } =
       output = output . string ("; begin " ++ printTree expr ++ "\n") 
     }
 
+generate_array_get :: Show a => Expr a -> StateData -> StateData
+generate_array_get (EArrayGet _ exp1 exp2) state =
+  rstate {
+    output = output . string
+      "  pop rdi\n\
+      \  pop rsi\n\
+      \  push rbx\n\
+      \  mov rbx, rdi\n\
+      \  call array_get\n\
+      \  mov rdi, rbx\n\
+      \  mov rbx, [rax]\n\
+      \  call decrease_refcount\n\
+      \  mov rax, rbx\n\
+      \  pop rbx\n\
+      \  push rax\n"
+  } where
+    rstate@State { output = output } = generate_expression_aux exp1 nstate
+    nstate = generate_expression_aux exp2 state
+
+generate_field_get :: Show a => Expr a -> StateData -> StateData
+generate_field_get (EFieldGet _ expr ident) state =
+  nstate {
+    output = output . string (
+      "  pop rax\n\
+      \  push rbx\n\
+      \  mov rbx, [rax + " ++ show (8 * offset) ++ "]\n\
+      \  mov rdi, rax\n\
+      \  call decrease_refcount\n\
+      \  mov rax, rbx\n\
+      \  pop rbx\n\
+      \  push rax\n")
+  } where
+    offset = class_offset (class_struct expr state) ident state
+    nstate@State {
+      output = output
+    } = generate_expression_aux expr state
+
 generate_expression_aux :: Show a => Expr a -> StateData -> StateData
 generate_expression_aux expr state@State {
   output = output, 
@@ -617,12 +675,14 @@ generate_expression_aux expr state@State {
   case expr of
     EVar _ _ -> generate_variable_load expr state
     ENull _ _ -> state { output = output . string "  push 0\n", stack_size = stack_size + 1 }
-    ELitFalse a -> generate_expression (ELitInt a 0) state
-    ELitTrue a -> generate_expression (ELitInt a 1) state
+    ELitFalse a -> generate_expression_aux (ELitInt a 0) state
+    ELitTrue a -> generate_expression_aux (ELitInt a 1) state
     EString _ str -> generate_string str state
     EApp _ _ _ -> generate_function_call expr state
     EArray _ _ _ -> generate_array expr state
     EObject _ _ -> generate_object expr state
+    EArrayGet _ _ _ -> generate_array_get expr state
+    EFieldGet _ _ _ -> generate_field_get expr state
     ELitInt _ int -> state {
       output = output . string ("  push " ++ (show int) ++ "\n"),
       stack_size = stack_size + 1
@@ -640,7 +700,7 @@ generate_expression_aux expr state@State {
         \  push rax\n",
       error_output = error_output . match_type expr [BooleanValue] state
     } where
-      nstate@State { output = output, error_output = error_output } = generate_expression expr state
+      nstate@State { output = output, error_output = error_output } = generate_expression_aux expr state
     Neg _ expr -> nstate {
       output = output . string 
         "  pop rax\n\
@@ -649,7 +709,7 @@ generate_expression_aux expr state@State {
         \  push rax\n",
       error_output = error_output . match_type expr [IntegerValue] state
     } where
-      nstate@State { output = output, error_output = error_output } = generate_expression expr state
+      nstate@State { output = output, error_output = error_output } = generate_expression_aux expr state
 
 generate_condition :: Show a => Expr a -> Stmt a -> Stmt a -> StateData -> StateData
 generate_condition exp stmt_true stmt_false state =

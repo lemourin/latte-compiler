@@ -37,9 +37,9 @@ void decrease_refcount(void* f) {
   }
 }
 
-void printInt(int n) { printf("%d\n", n); }
+void printInt(ssize_t n) { printf("%ld\n", n); }
 
-void printHex(int n) { printf("%x\n", n); }
+void printHex(ssize_t n) { printf("%lx\n", n); }
 
 void printString(struct string* str) {
   printf("%s\n", str ? str->data_ : "");
@@ -51,9 +51,9 @@ void error() {
   exit(0);
 }
 
-int readInt() {
-  int n;
-  scanf("%d\n", &n);
+ssize_t readInt() {
+  ssize_t n;
+  scanf("%ld\n", &n);
   return n;
 }
 

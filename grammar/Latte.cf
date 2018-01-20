@@ -95,6 +95,10 @@ EVar.      Expr6 ::= LValue ;
 
 ENull.     Expr6 ::= "(" Type ")" "null" ;
 
+EArrayGet. Expr6 ::= "(" Expr ")" "[" Expr "]" ;
+
+EFieldGet. Expr6 ::= "(" Expr ")" "." Ident ;
+
 ELitInt.   Expr6 ::= Integer ;
 
 ELitTrue.  Expr6 ::= "true" ;
@@ -107,7 +111,9 @@ EObject.   Expr6 ::= "new" Ident ;
 
 EApp.      Expr6 ::= Ident "(" [Expr] ")" ;
 
---EMethod.   Expr6 ::= LValue "." Ident "(" [Expr] ")" ;
+EMethod.   Expr6 ::= LValue "." Ident "(" [Expr] ")" ;
+
+EMethodResult. Expr6 ::= "(" Expr ")" "." Ident "(" [Expr] ")" ;
 
 EString.   Expr6 ::= String ;
 
