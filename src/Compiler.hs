@@ -1126,9 +1126,9 @@ generate_destructor ident@(ClassValue d) state@State { output = output, class_da
       "  mov rdi, rbx\n\
       \  call " ++ (printTree d) ++ "_destructor\n")
     Just cls@ClassData { field = field, base = base } = Map.lookup ident class_data
-    free = foldl merge (string "") field
+    free = foldl merge (string "") (Map.toList field)
     (Just base_size) = sizeof base state
-    merge str (t, location) = 
+    merge str (_, (t, location)) = 
       if is_refcounted t then
         str . string (
           "  mov rdi, rbx\n\
