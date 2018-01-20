@@ -107,7 +107,10 @@ class_struct expr state@State { class_data = class_data } =
     name -> case Map.lookup name class_data of
       Just t -> t
 
-equal_types t1 t2 = True
+equal_types t1 t2 =
+  case (t1, t2) of
+    (ClassValue _, ClassValue _) -> True
+    _ -> t1 == t2
 
 class_offset :: ClassData -> Ident -> StateData -> Int
 class_offset (ClassData { base = base, field = class_field }) field state@State {
