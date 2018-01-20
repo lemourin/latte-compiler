@@ -101,6 +101,8 @@ ELitFalse. Expr6 ::= "false" ;
 
 EArray.    Expr6 ::= "new" Type "[" Expr "]" ;
 
+EObject.   Expr6 ::= "new" Ident ;
+
 EApp.      Expr6 ::= Ident "(" [Expr] ")" ;
 
 EString.   Expr6 ::= String ;

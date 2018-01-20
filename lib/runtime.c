@@ -31,6 +31,7 @@ void decrease_refcount(void* f) {
     //printf("decrease refcount %p\n", f);
     if (*(ssize_t*)f <= 0) {
       intptr_t func = *(intptr_t*)(f + sizeof(ssize_t));
+      //printf("calling destructor %p\n", func);
       ((destructor)func)(f);
     }
   }
@@ -109,9 +110,20 @@ struct array* array_object_new(size_t length) {
 }
 
 void* array_get(struct array* array, size_t idx) {
-  //decrease_refcount(array);
-  //printf("gettingarray %p, %lu\n", array, array->ref_count_);
   return array->data_ + idx;
+}
+
+void* object_new(size_t size) {
+  size += 2 * sizeof(size_t);
+
+  void* object = malloc(size);
+  memset(object, 0, size);
+  *((size_t*)object) = 1;
+  return object;
+}
+
+void object_destructor(void* p) {
+  free(p);
 }
 
 struct string* readString() {

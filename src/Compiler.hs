@@ -17,7 +17,8 @@ data ValueType =
   VoidValue |
   ErrorValue |
   ArrayValue ValueType |
-  FunctionValue ValueType [ValueType] deriving (Eq, Show)
+  ClassValue Ident |
+  FunctionValue ValueType [ValueType] deriving (Eq, Show, Ord)
 
 type Location = Integer
 
@@ -25,10 +26,10 @@ type Environment = Map.Map Ident (ValueType, Location)
 
 type StringData = String -> String
 
-data ClassData = Class {
+data ClassData = ClassData {
   field :: Map.Map Ident (ValueType, Integer),
-  method :: Map.Map Ident (ValueType, Ident),
-  base :: Maybe Ident
+  method :: Map.Map Ident ValueType,
+  base :: ValueType
 } deriving (Eq, Show)
 
 data StateData = State {
@@ -44,20 +45,27 @@ data StateData = State {
   current_function :: ValueType,
   current_block :: Maybe Integer,
   parent_block :: Maybe Integer,
-  class_data :: Map.Map Ident ClassData,
+  class_data :: Map.Map ValueType ClassData,
   refcounted_variables :: [Integer]
 }
 
+string :: String -> StringData
 string s = (++) s
 
+class_empty :: ValueType -> ClassData
+class_empty base = ClassData Map.empty Map.empty base
+
+state_empty :: StateData
 state_empty = State [] ("" ++) ("" ++) 0 0 0 0 [] 0 ErrorValue Nothing Nothing Map.empty []
 
+argument_register :: Int -> Maybe String
 argument_register i = 
   if i < 6 then
     Just (["rdi", "rsi", "rdx", "rcx", "r8", "r9"] !! i)
   else
     Nothing
 
+load_registers :: Int -> StringData
 load_registers i = load_registers_aux 0 where
   load_registers_aux idx =
     if idx >= i then
@@ -66,6 +74,7 @@ load_registers i = load_registers_aux 0 where
         Just register -> string ("  pop " ++ register ++ "\n") . load_registers_aux (idx + 1)
         Nothing -> string ""
 
+location :: Ident -> StateData -> Maybe (ValueType, Location)
 location ident state@State { environment_stack = env } =
   foldl merge Nothing env where
     merge current e = case current of
@@ -89,6 +98,7 @@ load_argument idx =
     Nothing -> 
       string ("  mov rax, " ++ "[rbp + " ++ (show (8 * (idx - 6 + 2))) ++ "]\n") . set_variable idx "rax"
 
+to_value_type :: Show a => Type a -> ValueType
 to_value_type t =
   case t of
     Int _ -> IntegerValue
@@ -96,12 +106,15 @@ to_value_type t =
     Bool _ -> BooleanValue
     Void _ -> VoidValue
     Array _ t -> ArrayValue (to_value_type t)
+    Class _ ident -> ClassValue ident
 
+is_refcounted :: ValueType -> Bool
 is_refcounted t =
   case t of
     IntegerValue -> False
     VoidValue-> False
     BooleanValue -> False
+    ErrorValue -> False
     _ -> True
 
 relational_function operator = 
@@ -235,7 +248,7 @@ expression_position expr =
     EVar p _ -> p
 
 typeof :: Show a => Expr a -> StateData -> ValueType
-typeof expr state =
+typeof expr state@State { class_data = class_data } =
   case expr of
     EString _ _ -> StringValue
     EApp _ ident _ -> case location ident state of
@@ -252,6 +265,7 @@ typeof expr state =
     EAnd _ _ _ -> BooleanValue
     EOr _ _ _ -> BooleanValue
     EArray _ t _ -> ArrayValue (to_value_type t)
+    EObject _ t -> ClassValue t
     EVar _ lvalue -> case lvalue of
       LValueIdent _ ident -> case location ident state of 
         Just (t, _) -> t
@@ -259,7 +273,24 @@ typeof expr state =
       LValueArray p l _ -> case typeof (EVar p l) state of
         ArrayValue t -> t
         _ -> ErrorValue
-      LValueField p f ident -> ErrorValue
+      LValueField p f ident -> case typeof (EVar p f) state of
+        t@(ClassValue _) -> case Map.lookup t class_data of
+          Just ClassData { field = field } -> case Map.lookup ident field of
+            Just (t, _) -> t
+            _ -> ErrorValue
+          _ -> ErrorValue
+        _ -> ErrorValue
+
+sizeof :: ValueType -> StateData -> Maybe Int
+sizeof t state@State { class_data = class_data } = 
+  case t of
+    ClassValue (Ident "object") -> Just 2
+    ClassValue ident -> case Map.lookup t class_data of
+      Just x@ClassData { field = field, base = base } -> 
+        case sizeof base state of
+          Just x -> Just (x + Map.size field)
+          _ -> Nothing
+      _ -> Nothing
 
 match_type :: Show a => Expr a -> [ValueType] -> StateData -> StringData
 match_type exp t state = 
@@ -380,9 +411,26 @@ generate_function_call (EApp position ident@(Ident id) expr) state@State {
 
 generate_find_variable :: Show a => Expr a -> StateData -> StateData
 generate_find_variable expr@(EVar position lvalue) state@State {
-  output = output, error_output = error_output, stack_size = stack_size
+  output = output, error_output = error_output, stack_size = stack_size, class_data = class_data
 } = case lvalue of
-  LValueField _ lvalue field -> state
+  LValueField _ lvalue field -> nstate {
+    output = output . string (
+      "  pop rax\n\
+      \  mov rax, [rax]\n\
+      \  add rax, " ++ (show (8 * offset)) ++ "\n\
+      \  push rax\n"
+    ),
+    error_output = error_output
+  } where
+    cls@ClassData { field = class_field, base = base } =
+      case typeof (EVar position lvalue) state of
+        name -> case Map.lookup name class_data of
+          Just t -> t
+    Just base_offset = sizeof base state
+    Just (_, field_offset) = Map.lookup field class_field
+    offset = base_offset + (fromInteger field_offset)
+    nstate@State{ output = output, error_output = error_output } = 
+      generate_find_variable (EVar position lvalue) state
   LValueIdent _ ident -> case location ident state of
     Just (t, idx) -> state {
       output = output . string (
@@ -435,6 +483,20 @@ generate_array (EArray p t expr) state =
         "array_object_new"
       else
         "array_new"
+
+generate_object :: Show a => Expr a -> StateData -> StateData
+generate_object (EObject p t) state@State { output = output } =
+  state {
+    output = output . string (
+      "  mov rdi, " ++ (show (8 * size)) ++ "\n\
+      \  call object_new\n\
+      \  mov qword [rax + 8], " ++ (printTree t) ++ "_destructor\n\
+      \  push rax\n"
+    )
+  } where 
+    size = case sizeof (to_value_type (Class p t)) state of
+      Just x -> x
+      _ -> 0
 
 generate_relation_expression :: Show a => Expr a -> StateData -> StateData
 generate_relation_expression (ERel p e1 op e2) state = 
@@ -548,6 +610,7 @@ generate_expression_aux expr state@State {
     EString _ str -> generate_string str state
     EApp _ _ _ -> generate_function_call expr state
     EArray _ _ _ -> generate_array expr state
+    EObject _ _ -> generate_object expr state
     ELitInt _ int -> state {
       output = output . string ("  push " ++ (show int) ++ "\n"),
       stack_size = stack_size + 1
@@ -900,37 +963,77 @@ generate_function
       else
         string ""
 
+generate_destructor :: ValueType -> StateData -> StateData
+generate_destructor ident@(ClassValue d) state@State { output = output, class_data = class_data } =
+  state { 
+    output = output . string (
+      (printTree d) ++ "_destructor:\n"
+    ) . string "  push rbx\n  mov rbx, rdi\n" . free . (call_base base) . string "  pop rbx\n  ret\n\n"
+  } where
+    call_base id@(ClassValue d) = string (
+      "  mov rdi, rbx\n\
+      \  call " ++ (printTree d) ++ "_destructor\n")
+    Just cls@ClassData { field = field, base = base } = Map.lookup ident class_data
+    free = foldl merge (string "") field
+    (Just base_size) = sizeof base state
+    merge str (t, location) = 
+      if is_refcounted t then
+        str . string (
+          "  mov rdi, rbx\n\
+          \  add rdi, " ++ (show idx) ++ "\n\
+          \  mov rdi, [rdi]\n\
+          \  call decrease_refcount\n")
+      else
+        str
+      where
+        idx = 8 * ((toInteger base_size) + location)
+
 generate_class_definition :: Show a => TopDef a -> StateData -> StateData
 generate_class_definition (ClassDef _ def) state =
   case def of
-    ClassBase _ ident elem -> state
+    ClassExtends _ ident base defs -> generate (ClassValue ident) base defs state
+    ClassBase _ ident defs -> generate (ClassValue ident) (Ident "object") defs state
+  where 
+    generate ident base defs state = generate_destructor ident state
 
 compile_top_definition :: Show a => TopDef a -> StateData -> StateData 
-compile_top_definition def state=
+compile_top_definition def state =
   case def of
     FnDef _ _ _ _ _ -> generate_function def state
     ClassDef _ _ -> generate_class_definition def state
 
 get_top_definition :: Show a => TopDef a -> StateData -> StateData
 get_top_definition definition state@State{ 
-  environment_stack = [env], error_output = error_output 
+  environment_stack = [env], error_output = error_output, class_data = class_data
 } = 
   case definition of
     FnDef position t ident args _ -> state { 
-      environment_stack = [Map.insert ident (func_type, 0) env],
+      environment_stack = [Map.insert ident ((func_type t args), 0) env],
       error_output = error_output . error 
     } where
-      func_type = FunctionValue (to_value_type t) (map (\(Arg _ t _) -> to_value_type t) args)
       error = case Map.lookup ident env of
         Nothing -> string ""
         Just _ -> string ((show position) ++ ": function " ++ show ident ++ " redeclared\n")
     ClassDef _ d -> 
       case d of 
-        ClassExtends _ ident base defs -> collect ident base defs state
-        ClassBase _ ident defs -> collect ident (Ident "Object") defs state
+        ClassExtends _ ident base defs -> collect (ClassValue ident) (ClassValue base) defs state
+        ClassBase _ ident defs -> collect (ClassValue ident) (ClassValue (Ident "object")) defs state
       where
-        collect ident base defs state = foldl merge state defs
-        merge state d = state
+        collect ident base defs state = state {
+          class_data = Map.insert ident (new_class base defs) class_data
+        }
+        new_class base defs = fst (foldl merge (class_empty base, 0) defs)
+        merge (cls, idx) d = case d of
+          ClassField _ t items -> foldl merge (cls, idx) items where
+            merge (cls@ClassData { field = field }, idx) (ClassItem _ i) = (ncls, idx + 1) where
+              ncls = cls {
+                field = Map.insert i (to_value_type t, idx) field
+              }
+          ClassMethod _ ret ident args _ -> (cls {
+            method = Map.insert ident (func_type ret args) method
+          }, idx) where ClassData { method = method } = cls
+  where
+    func_type t args = FunctionValue (to_value_type t) (map (\(Arg _ t _) -> to_value_type t) args)
 
 compile :: Show a => Program a -> StateData -> StateData
 compile (Program d code) state =
@@ -954,10 +1057,13 @@ compile (Program d code) state =
         output = string (
           "section .text\n\n\
           \global main\n\n\
+          \extern puts\n\
           \extern array_new\n\
           \extern array_object_new\n\
           \extern array_get\n\
           \extern string_new\n\
+          \extern object_new\n\
+          \extern object_destructor\n\
           \extern string_concatenate\n\
           \extern increase_refcount\n\
           \extern decrease_refcount\n\
