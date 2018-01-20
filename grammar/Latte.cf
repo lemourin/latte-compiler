@@ -47,9 +47,9 @@ separator nonempty Item "," ;
 
 Ass.       Stmt ::= LValue "=" Expr  ";" ;
 
-Incr.      Stmt ::= Ident "++"  ";" ;
+Incr.      Stmt ::= LValue "++"  ";" ;
 
-Decr.      Stmt ::= Ident "--"  ";" ;
+Decr.      Stmt ::= LValue "--"  ";" ;
 
 Ret.       Stmt ::= "return" Expr ";" ;
 
@@ -93,6 +93,8 @@ separator  Type "," ;
 
 EVar.      Expr6 ::= LValue ;
 
+ENull.     Expr6 ::= "(" Type ")" "null" ;
+
 ELitInt.   Expr6 ::= Integer ;
 
 ELitTrue.  Expr6 ::= "true" ;
@@ -104,6 +106,8 @@ EArray.    Expr6 ::= "new" Type "[" Expr "]" ;
 EObject.   Expr6 ::= "new" Ident ;
 
 EApp.      Expr6 ::= Ident "(" [Expr] ")" ;
+
+--EMethod.   Expr6 ::= LValue "." Ident "(" [Expr] ")" ;
 
 EString.   Expr6 ::= String ;
 

@@ -234,6 +234,7 @@ expression_position :: Show a => Expr a -> a
 expression_position expr =
   case expr of
     EString p _ -> p
+    ENull p _ -> p
     EApp p _ _ -> p
     ELitInt p _ -> p
     ELitTrue p -> p
@@ -251,6 +252,7 @@ typeof :: Show a => Expr a -> StateData -> ValueType
 typeof expr state@State { class_data = class_data } =
   case expr of
     EString _ _ -> StringValue
+    ENull _ t -> to_value_type t
     EApp _ ident _ -> case location ident state of
       Just (FunctionValue t _, _) -> t
       Nothing -> ErrorValue
@@ -274,6 +276,7 @@ typeof expr state@State { class_data = class_data } =
         ArrayValue t -> t
         _ -> ErrorValue
       LValueField p f ident -> case typeof (EVar p f) state of
+        t@(ArrayValue _) -> if ident == Ident "length" then IntegerValue else ErrorValue
         t@(ClassValue _) -> case Map.lookup t class_data of
           Just ClassData { field = field } -> case Map.lookup ident field of
             Just (t, _) -> t
@@ -284,7 +287,7 @@ typeof expr state@State { class_data = class_data } =
 sizeof :: ValueType -> StateData -> Maybe Int
 sizeof t state@State { class_data = class_data } = 
   case t of
-    ClassValue (Ident "object") -> Just 2
+    ClassValue (Ident "_object") -> Just 2
     ClassValue ident -> case Map.lookup t class_data of
       Just x@ClassData { field = field, base = base } -> 
         case sizeof base state of
@@ -294,12 +297,16 @@ sizeof t state@State { class_data = class_data } =
 
 match_type :: Show a => Expr a -> [ValueType] -> StateData -> StringData
 match_type exp t state = 
-  if exptype /= ErrorValue && (notElem exptype t) then
+  if exptype /= ErrorValue && (notElem exptype t) && not_class then
     string ((show (expression_position exp)) ++ ": expected one of " ++ show t ++ 
       ", got " ++ show exptype ++ "\n")
   else
     string ""
-  where exptype = typeof exp state
+  where 
+    exptype = typeof exp state
+    not_class = case exptype of
+      ClassValue _ -> False
+      _ -> True
 
 required_stack :: Show a => TopDef a -> Int
 required_stack function@(FnDef a _ _ args block) =
@@ -315,6 +322,7 @@ required_stack function@(FnDef a _ _ args block) =
       CondElse _ _ stmt_true stmt_false -> max (compute stmt_true) (compute stmt_false)
       While _ _ stmt -> compute stmt
       Decl _ _ items -> length items
+      ForEach _ _ _ _ _ -> compute (translate_foreach stmt)
       _ -> 0
 
 generate_string :: String -> StateData -> StateData
@@ -424,6 +432,9 @@ generate_find_variable expr@(EVar position lvalue) state@State {
   } where
     cls@ClassData { field = class_field, base = base } =
       case typeof (EVar position lvalue) state of
+        ArrayValue _ -> (class_empty (ClassValue (Ident "_object"))) {
+          field = Map.fromList [(Ident "length", (IntegerValue, 0))]
+        }
         name -> case Map.lookup name class_data of
           Just t -> t
     Just base_offset = sizeof base state
@@ -605,6 +616,7 @@ generate_expression_aux expr state@State {
 } =
   case expr of
     EVar _ _ -> generate_variable_load expr state
+    ENull _ _ -> state { output = output . string "  push 0\n", stack_size = stack_size + 1 }
     ELitFalse a -> generate_expression (ELitInt a 0) state
     ELitTrue a -> generate_expression (ELitInt a 1) state
     EString _ str -> generate_string str state
@@ -725,20 +737,16 @@ generate_assignment (Ass position lvalue exp) state =
 generate_incrementation :: Show a => Stmt a -> StateData -> StateData
 generate_incrementation stmt state =
   case stmt of
-    Incr position ident -> result position ident "inc"
-    Decr position ident -> result position ident "dec"
+    Incr position lvalue -> result position lvalue "inc"
+    Decr position lvalue -> result position lvalue "dec"
   where
-    result position ident operation = state {
-      output = output . (load_variable idx "rax") . 
-        (string ("  " ++ operation ++ " rax\n")) . (set_variable idx "rax"),
+    result position lvalue operation = nstate {
+      output = output . string ("  pop rax\n" ++ operation ++ " qword [rax]\n"),
       error_output = error_output . error
     } where
-      State { output = output, error_output = error_output } = state
-      (idx, error) = case location ident state of
-        Just (t, idx) -> case t of
-          IntegerValue -> (idx, string "")
-          _ -> (idx, string (show position ++ ": variable " ++ show ident ++ " not an IntegerValue\n"))
-        Nothing -> (0, string (show position ++ ": undeclared variable " ++ show ident ++ "\n"))
+      nstate@State { output = output, error_output = error_output } = 
+        generate_find_variable (EVar position lvalue) state
+      error = match_type (EVar position lvalue) [IntegerValue] state
 
 generate_declaration :: Show a => Stmt a -> StateData -> StateData
 generate_declaration (Decl _ t arr) state =
@@ -847,6 +855,32 @@ generate_expression_statement (SExp _ exp) state =
         else 
           string "  add rsp, 8\n"
 
+translate_foreach :: Show a => Stmt a -> Stmt a
+translate_foreach (ForEach p t ident expr stmt) = foreach where
+  foreach = (BStmt p (Block p [
+    (Decl p (Int p) [NoInit p (Ident "_idx")]),
+    (Decl p (Array p t) [Init p (Ident "_array") expr]),
+    (While p condition body)]))
+  condition = ERel p left_side (LTH p) right_side
+  left_side = EVar p (LValueIdent p (Ident "_idx"))
+  right_side = EVar p (LValueField p (LValueIdent p (Ident "_array")) (Ident "length"))
+  body = BStmt p (Block p [
+    (Decl p t [
+      Init p ident (
+        EVar p (
+          LValueArray p 
+            (LValueIdent p (Ident "_array")) 
+            (EVar p (LValueIdent p (Ident "_idx")))
+        )
+      )
+    ]),
+    stmt,
+    (Incr p (LValueIdent p (Ident "_idx")))])
+
+generate_foreach :: Show a => Stmt a -> StateData -> StateData
+generate_foreach foreach state =
+  generate_statement (translate_foreach foreach) state
+
 generate_statement :: Show a => Stmt a -> StateData -> StateData
 generate_statement stmt state@State { 
   output = output,
@@ -869,6 +903,7 @@ generate_statement stmt state@State {
     SExp _ _ -> generate_expression_statement stmt state
     Cond a exp stmt -> generate_condition exp stmt (Empty a) state
     CondElse _ exp stmt1 stmt2 -> generate_condition exp stmt1 stmt2 state
+    ForEach _ _ _ _ _ -> generate_foreach stmt state
     While _ _ _ -> generate_while stmt state
     VRet _ -> generate_return_void stmt state
     Ret _ _ -> generate_return stmt state
@@ -992,7 +1027,7 @@ generate_class_definition :: Show a => TopDef a -> StateData -> StateData
 generate_class_definition (ClassDef _ def) state =
   case def of
     ClassExtends _ ident base defs -> generate (ClassValue ident) base defs state
-    ClassBase _ ident defs -> generate (ClassValue ident) (Ident "object") defs state
+    ClassBase _ ident defs -> generate (ClassValue ident) (Ident "_object") defs state
   where 
     generate ident base defs state = generate_destructor ident state
 
@@ -1017,7 +1052,7 @@ get_top_definition definition state@State{
     ClassDef _ d -> 
       case d of 
         ClassExtends _ ident base defs -> collect (ClassValue ident) (ClassValue base) defs state
-        ClassBase _ ident defs -> collect (ClassValue ident) (ClassValue (Ident "object")) defs state
+        ClassBase _ ident defs -> collect (ClassValue ident) (ClassValue (Ident "_object")) defs state
       where
         collect ident base defs state = state {
           class_data = Map.insert ident (new_class base defs) class_data
@@ -1063,7 +1098,7 @@ compile (Program d code) state =
           \extern array_get\n\
           \extern string_new\n\
           \extern object_new\n\
-          \extern object_destructor\n\
+          \extern _object_destructor\n\
           \extern string_concatenate\n\
           \extern increase_refcount\n\
           \extern decrease_refcount\n\

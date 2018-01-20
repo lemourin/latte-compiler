@@ -14,8 +14,8 @@ struct __attribute__((__packed__)) string {
 struct __attribute__((__packed__)) array {
   ssize_t ref_count_;
   destructor release_;
-  size_t* data_;
   size_t length_;
+  size_t* data_;
 };
 
 void increase_refcount(void* f) {
@@ -122,7 +122,7 @@ void* object_new(size_t size) {
   return object;
 }
 
-void object_destructor(void* p) {
+void _object_destructor(void* p) {
   free(p);
 }
 
