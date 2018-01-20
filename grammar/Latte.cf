@@ -111,9 +111,9 @@ EObject.   Expr6 ::= "new" Ident ;
 
 EApp.      Expr6 ::= Ident "(" [Expr] ")" ;
 
-EMethod.   Expr6 ::= LValue "." Ident "(" [Expr] ")" ;
+EMethodSimple.   Expr6 ::= LValue "." Ident "(" [Expr] ")" ;
 
-EMethodResult. Expr6 ::= "(" Expr ")" "." Ident "(" [Expr] ")" ;
+EMethod.   Expr6 ::= "(" Expr ")" "." Ident "(" [Expr] ")" ;
 
 EString.   Expr6 ::= String ;
 

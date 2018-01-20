@@ -32,7 +32,7 @@ TestLatte: grammar/TestLatte.hs
 	ghc --make $< -o TestLatte
 
 grammar/ErrM.hs grammar/TestLatte.hs grammar/ParLatte.y grammar/LexLatte.x: grammar/Latte.cf
-	$(BNFC) -o grammar --functor $<
+	$(BNFC) -o grammar --functor $< > /dev/null
 
 grammar/ParLatte.hs: grammar/ParLatte.y
 	happy -gca $<

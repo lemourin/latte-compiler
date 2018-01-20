@@ -5,6 +5,7 @@ import LexLatte
 import AbsLatte
 import PrintLatte
 import ErrM
+import Debug.Trace
 import qualified Data.Map as Map
 
 data Value = 
@@ -106,11 +107,31 @@ class_struct expr state@State { class_data = class_data } =
     name -> case Map.lookup name class_data of
       Just t -> t
 
-class_offset cls@ClassData { base = base, field = class_field } field state = 
+equal_types t1 t2 = True
+
+class_offset :: ClassData -> Ident -> StateData -> Int
+class_offset (ClassData { base = base, field = class_field }) field state@State {
+  class_data = class_data
+} = 
   offset where
     Just base_offset = sizeof base state
-    Just (_, field_offset) = Map.lookup field class_field
+    field_offset = case Map.lookup field class_field of
+      Just (_, x) -> x
+      _ -> case Map.lookup base class_data of
+        Just cls -> toInteger (class_offset cls field state)
     offset = base_offset + (fromInteger field_offset)
+
+method_name :: String -> ClassData -> Ident -> StateData -> String
+method_name class_name (ClassData { base = base, method = method_data }) method state@State {
+  class_data = class_data
+} =
+  name where
+    name = case Map.lookup method method_data of
+      Just _ -> class_name ++ "_" ++ (printTree method)
+      _ -> case Map.lookup base class_data of
+        Just cls -> method_name base_name cls method state where
+          ClassValue (Ident base_name) = base
+        _ -> "error"
 
 from_value_type :: Show a => a -> ValueType -> Type a
 from_value_type p t =
@@ -298,20 +319,34 @@ typeof expr state@State { class_data = class_data } =
     EOr _ _ _ -> BooleanValue
     EArray _ t _ -> ArrayValue (to_value_type t)
     EObject _ t -> ClassValue t
-    EVar _ lvalue -> case lvalue of
+    EMethodSimple p lvalue ident args -> typeof (EMethod p (EVar p lvalue) ident args) state
+    EMethod _ e ident _ -> method_type (Map.lookup (typeof e state) class_data) where
+      method_type cls =
+        case cls of
+          Just ClassData { method = method, base = base } -> 
+            case Map.lookup ident method of
+              Just (FunctionValue t _) -> t
+              _ -> method_type (Map.lookup base class_data)
+          _ -> ErrorValue
+    EVar p lvalue -> case lvalue of
       LValueIdent _ ident -> case location ident state of 
         Just (t, _) -> t
-        Nothing -> ErrorValue
+        Nothing -> case location (Ident "self") state of
+          Just x -> typeof (EVar p (LValueField p (LValueIdent p (Ident "self")) ident)) state
+          _ -> ErrorValue
       LValueArray p l _ -> case typeof (EVar p l) state of
         ArrayValue t -> t
         _ -> ErrorValue
       LValueField p f ident -> case typeof (EVar p f) state of
         t@(ArrayValue _) -> if ident == Ident "length" then IntegerValue else ErrorValue
-        t@(ClassValue _) -> case Map.lookup t class_data of
-          Just ClassData { field = field } -> case Map.lookup ident field of
-            Just (t, _) -> t
-            _ -> ErrorValue
-          _ -> ErrorValue
+        t@(ClassValue _) -> field_type (Map.lookup t class_data) where
+          field_type cls =
+            case cls of
+              Just ClassData { field = field, base = base } -> 
+                case Map.lookup ident field of
+                  Just (t, _) -> t
+                  _ -> field_type (Map.lookup base class_data)
+              _ -> ErrorValue
         _ -> ErrorValue
 
 sizeof :: ValueType -> StateData -> Maybe Int
@@ -438,7 +473,7 @@ generate_function_call (EApp position ident@(Ident id) expr) state@State {
           string ((show position) ++ ": invalid argument count for function call " ++ show id ++ "\n")
         where 
           merge str (t, expr) = 
-            if ftype /= t then
+            if not (equal_types ftype t) then
               string ((show position) ++ 
                 ": function argument type mismatch: expected " ++ (show t) ++ 
                 ", got " ++ (show ftype) ++ "\n")
@@ -449,7 +484,11 @@ generate_function_call (EApp position ident@(Ident id) expr) state@State {
 
 generate_find_variable :: Show a => Expr a -> StateData -> StateData
 generate_find_variable expr@(EVar position lvalue) state@State {
-  output = output, error_output = error_output, stack_size = stack_size, class_data = class_data
+  output = output, 
+  error_output = error_output, 
+  stack_size = stack_size, 
+  class_data = class_data,
+  current_function = current_function
 } = case lvalue of
   LValueField _ lvalue field -> nstate {
     output = output . string (
@@ -471,10 +510,13 @@ generate_find_variable expr@(EVar position lvalue) state@State {
         \  push rax\n"),
       stack_size = stack_size + 1
     }
-    Nothing -> state {
-      error_output = error_output . string (
-        (show position) ++ ": undeclared variable " ++ (show ident) ++ "\n"
-      )
+    Nothing -> case location (Ident "self") state of
+      Just x -> generate_find_variable 
+        (EVar position (LValueField position (LValueIdent position (Ident "self")) ident)) state
+      _ -> state {
+        error_output = error_output . string (
+          (show position) ++ ": undeclared variable " ++ (show ident) ++ "\n"
+        )
     }
   LValueArray _ lvalue expr -> rstate {
     output = output . string
@@ -665,6 +707,15 @@ generate_field_get (EFieldGet _ expr ident) state =
       output = output
     } = generate_expression_aux expr state
 
+generate_method_call :: Show a => Expr a -> StateData -> StateData
+generate_method_call (EMethod p exp ident args) state =
+  generate_function_call (EApp p (Ident func_name) (exp:args)) state
+  where
+    ClassValue (Ident name) = typeof exp state
+    cls = class_struct exp state
+    func_name = method_name name cls ident state
+    nstate@State { output = output } = state
+
 generate_expression_aux :: Show a => Expr a -> StateData -> StateData
 generate_expression_aux expr state@State {
   output = output, 
@@ -683,6 +734,9 @@ generate_expression_aux expr state@State {
     EObject _ _ -> generate_object expr state
     EArrayGet _ _ _ -> generate_array_get expr state
     EFieldGet _ _ _ -> generate_field_get expr state
+    EMethodSimple p lvalue ident args -> 
+      generate_method_call (EMethod p (EVar p lvalue) ident args) state
+    EMethod _ _ _ _ -> generate_method_call expr state
     ELitInt _ int -> state {
       output = output . string ("  push " ++ (show int) ++ "\n"),
       stack_size = stack_size + 1
@@ -788,7 +842,7 @@ generate_assignment (Ass position lvalue exp) state =
       t1 = typeof (EVar position lvalue) state
       t2 = typeof exp state
       error = 
-        if t1 /= t2 && t1 /= ErrorValue && t2 /= ErrorValue then
+        if not (equal_types t1 t2) && t1 /= ErrorValue && t2 /= ErrorValue then
           string ((show position) ++ 
             ": type mismatch in assignment: expected " ++ (show t1) ++ ", got " ++ (show t2) ++ "\n")
         else
@@ -843,7 +897,7 @@ generate_declaration (Decl _ t arr) state =
           refcounted_variables = refcounted_variables
         } = generate_expression expr state
         exptype = typeof expr state
-        type_error = if (exptype /= (to_value_type t)) && (exptype /= ErrorValue) then
+        type_error = if not (equal_types exptype (to_value_type t)) && (exptype /= ErrorValue) then
           string ((show position) ++ ": type mismatch: expected " ++ 
             (show (to_value_type t)) ++ ", got " ++ (show exptype) ++ "\n")
         else
@@ -1083,13 +1137,24 @@ generate_destructor ident@(ClassValue d) state@State { output = output, class_da
       where
         idx = 8 * ((toInteger base_size) + location)
 
+translate_method :: Show a => String -> ClassElement a -> TopDef a
+translate_method class_name (ClassMethod p ret (Ident name) args block) =
+  FnDef p ret (Ident (class_name ++ "_" ++ name))
+    ((Arg p (Class p (Ident class_name)) (Ident "self")):args) block
+
 generate_class_definition :: Show a => TopDef a -> StateData -> StateData
 generate_class_definition (ClassDef _ def) state =
   case def of
     ClassExtends _ ident base defs -> generate (ClassValue ident) base defs state
     ClassBase _ ident defs -> generate (ClassValue ident) (Ident "_object") defs state
   where 
-    generate ident base defs state = generate_destructor ident state
+    generate ident base defs state = 
+      foldl merge (generate_destructor ident state) defs where
+        ClassValue (Ident class_name) = ident
+        merge state d = case d of
+          ClassMethod _ _ _ _ _ -> 
+            compile_top_definition (translate_method class_name d) state
+          _ -> state
 
 compile_top_definition :: Show a => TopDef a -> StateData -> StateData 
 compile_top_definition def state =
@@ -1115,8 +1180,15 @@ get_top_definition definition state@State{
         ClassBase _ ident defs -> collect (ClassValue ident) (ClassValue (Ident "_object")) defs state
       where
         collect ident base defs state = state {
-          class_data = Map.insert ident (new_class base defs) class_data
-        }
+          class_data = Map.insert ident (new_class base defs) class_data,
+          environment_stack = [methods defs]
+        } where
+          ClassValue (Ident class_name) = ident
+          methods defs = foldl collect_methods env defs
+          collect_methods env d = case d of
+            ClassMethod _ _ _ _ _-> Map.insert ident ((func_type t args), 0) env where 
+              FnDef position t ident args _ = translate_method class_name d
+            _ -> env
         new_class base defs = fst (foldl merge (class_empty base, 0) defs)
         merge (cls, idx) d = case d of
           ClassField _ t items -> foldl merge (cls, idx) items where
