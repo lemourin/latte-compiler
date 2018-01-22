@@ -106,35 +106,39 @@ class_struct expr state@State { class_data = class_data } =
     }
     name -> case Map.lookup name class_data of
       Just t -> t
+      _ -> class_empty (ClassValue (Ident "ErrorClass"))
 
 equal_types t1 t2 =
   case (t1, t2) of
     (ClassValue _, ClassValue _) -> True
     _ -> t1 == t2
 
-class_offset :: ClassData -> Ident -> StateData -> Int
+class_offset :: ClassData -> Ident -> StateData -> Maybe Integer
 class_offset (ClassData { base = base, field = class_field }) field state@State {
   class_data = class_data
 } = 
   offset where
     Just base_offset = sizeof base state
     field_offset = case Map.lookup field class_field of
-      Just (_, x) -> x
+      Just (_, x) -> Just x
       _ -> case Map.lookup base class_data of
-        Just cls -> toInteger (class_offset cls field state)
-    offset = base_offset + (fromInteger field_offset)
+        Just cls -> class_offset cls field state
+        _ -> Nothing
+    offset = case field_offset of
+      Just f -> Just ((toInteger base_offset) + f)
+      _ -> Nothing
 
-method_name :: String -> ClassData -> Ident -> StateData -> String
+method_name :: String -> ClassData -> Ident -> StateData -> Maybe String
 method_name class_name (ClassData { base = base, method = method_data }) method state@State {
   class_data = class_data
 } =
   name where
     name = case Map.lookup method method_data of
-      Just _ -> class_name ++ "_" ++ (printTree method)
+      Just _ -> Just ("_" ++ class_name ++ "_" ++ (printTree method))
       _ -> case Map.lookup base class_data of
         Just cls -> method_name base_name cls method state where
           ClassValue (Ident base_name) = base
-        _ -> "error"
+        _ -> Nothing
 
 from_value_type :: Show a => a -> ValueType -> Type a
 from_value_type p t =
@@ -500,9 +504,18 @@ generate_find_variable expr@(EVar position lvalue) state@State {
       \  add rax, " ++ (show (8 * offset)) ++ "\n\
       \  push rax\n"
     ),
-    error_output = error_output
-  } where 
-    offset = class_offset (class_struct (EVar position lvalue) state) field state
+    error_output = error_output . error
+  } where
+    (offset, error) = case class_offset (class_struct (EVar position lvalue) state) field state of
+      Just offset -> (offset, string "")
+      _ -> (0, string error) where
+        t = typeof (EVar position lvalue) state
+        error = 
+          if t /= ErrorValue then
+            (show position) ++ ": " ++ 
+            ((show t) ++ " doesn't have field " ++ (show field) ++ "\n")
+          else
+            ""
     nstate@State{ output = output, error_output = error_output } = 
       generate_find_variable (EVar position lvalue) state
   LValueIdent _ ident -> case location ident state of
@@ -703,21 +716,39 @@ generate_field_get (EFieldGet _ expr ident) state =
       \  call decrease_refcount\n\
       \  mov rax, rbx\n\
       \  pop rbx\n\
-      \  push rax\n")
+      \  push rax\n"),
+    error_output = error_output . error
   } where
-    offset = class_offset (class_struct expr state) ident state
+    (offset, error) = case class_offset (class_struct expr state) ident state of
+      Just offset -> (offset, string "")
     nstate@State {
-      output = output
+      output = output,
+      error_output = error_output
     } = generate_expression_aux expr state
 
 generate_method_call :: Show a => Expr a -> StateData -> StateData
-generate_method_call (EMethod p exp ident args) state =
-  generate_function_call (EApp p (Ident func_name) (exp:args)) state
-  where
+generate_method_call (EMethod p exp ident args) state@State { 
+  output = output,
+  error_output = error_output 
+} =
+  nstate { error_output = error_output . error } where
+    nstate = 
+      if func_name == "" then
+        state
+      else
+        generate_function_call (EApp p (Ident func_name) (exp:args)) state
     ClassValue (Ident name) = typeof exp state
     cls = class_struct exp state
-    func_name = method_name name cls ident state
-    nstate@State { output = output } = state
+    (func_name, error) = case method_name name cls ident state of
+      Just name -> (name, string "")
+      Nothing -> ("", string error) where
+        t = typeof exp state
+        error = 
+          if t /= ErrorValue then
+            (show p) ++ ": method " ++ (printTree ident) ++ 
+            " not found in class " ++ (show t) ++ "\n"
+          else
+            ""
 
 generate_expression_aux :: Show a => Expr a -> StateData -> StateData
 generate_expression_aux expr state@State {
@@ -1142,7 +1173,7 @@ generate_destructor ident@(ClassValue d) state@State { output = output, class_da
 
 translate_method :: Show a => String -> ClassElement a -> TopDef a
 translate_method class_name (ClassMethod p ret (Ident name) args block) =
-  FnDef p ret (Ident (class_name ++ "_" ++ name))
+  FnDef p ret (Ident ("_" ++ class_name ++ "_" ++ name))
     ((Arg p (Class p (Ident class_name)) (Ident "self")):args) block
 
 generate_class_definition :: Show a => TopDef a -> StateData -> StateData
