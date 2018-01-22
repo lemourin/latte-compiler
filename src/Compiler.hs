@@ -750,6 +750,25 @@ generate_method_call (EMethod p exp ident args) state@State {
           else
             ""
 
+generate_integer :: Show a => Expr a -> StateData -> StateData
+generate_integer (ELitInt p int) state@State { 
+  stack_size = stack_size, 
+  output = output, 
+  error_output = error_output 
+} =
+  state {
+      output = output . (string code),
+      error_output = error_output . (string error),
+      stack_size = stack_size + 1
+    } where 
+      (code, error) =
+        if int >= -2147483648 && int < 2147483648 then
+          (("  push " ++ show int ++ "\n"), "")
+        else if int >= -9223372036854775808 && int < 9223372036854775808 then
+          (("  mov rax, " ++ (show int) ++ "\n  push rax\n"), "")
+        else
+          ("", (show p) ++ ": integer out of bounds\n")
+
 generate_expression_aux :: Show a => Expr a -> StateData -> StateData
 generate_expression_aux expr state@State {
   output = output, 
@@ -771,10 +790,7 @@ generate_expression_aux expr state@State {
     EMethodSimple p lvalue ident args -> 
       generate_method_call (EMethod p (EVar p lvalue) ident args) state
     EMethod _ _ _ _ -> generate_method_call expr state
-    ELitInt _ int -> state {
-      output = output . string ("  push " ++ (show int) ++ "\n"),
-      stack_size = stack_size + 1
-    }
+    ELitInt _ _ -> generate_integer expr state
     EAnd _ _ _ -> generate_lazy_expression expr state
     EOr _ _ _ -> generate_lazy_expression expr state
     ERel _ _ _ _ -> generate_relation_expression expr state
