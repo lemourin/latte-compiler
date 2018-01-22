@@ -11,14 +11,14 @@ KOMPILATOR LATTE
 
 # Optymalizacje:
 
-* stos wyrównany do 16 bajtów
-
 * wyliczanie stałych wyrażeń w trakcie kompilacji
   * np kod `int a = 2 + 3 * 4;` zostanie zamieniony w `int a = 14;`
 
 # Zaimplementowane rozszerzenia:
 
-* brak
+* odśmiecanie
+* klasy z metodami, bez metod wirtualnych
+* tablice
 
 # Używane narzędzia i biblioteki:
 
